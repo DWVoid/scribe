@@ -3,6 +3,28 @@ import tensorflow_addons as tfa
 from utils import *
 
 
+def rnn_decoder(decoder_inputs,
+                initial_state,
+                cell,
+                loop_function=None,
+                scope=None):
+    with tf.compat.v1.variable_scope(scope or "rnn_decoder"):
+        state = initial_state
+        outputs = []
+        prev = None
+        for i, inp in enumerate(decoder_inputs):
+            if loop_function is not None and prev is not None:
+                with tf.compat.v1.variable_scope("loop_function", reuse=True):
+                    inp = loop_function(prev, i)
+            if i > 0:
+                tf.compat.v1.get_variable_scope().reuse_variables()
+            output, state = cell(inp, state)
+            outputs.append(output)
+            if loop_function is not None:
+                prev = output
+    return outputs, state
+
+
 class Model:
     def __init__(self, args, logger):
         self.logger = logger
@@ -35,9 +57,9 @@ class Model:
 
         # ----- build the basic recurrent network architecture
         cell_func = tf.compat.v1.nn.rnn_cell.LSTMCell  # could be GRUCell or RNNCell
-        self.cell0 = cell_func(args.rnn_size, state_is_tuple=True, initializer=self.graves_initializer)
-        self.cell1 = cell_func(args.rnn_size, state_is_tuple=True, initializer=self.graves_initializer)
-        self.cell2 = cell_func(args.rnn_size, state_is_tuple=True, initializer=self.graves_initializer)
+        self.cell0 = cell_func(args.rnn_size, initializer=self.graves_initializer)
+        self.cell1 = cell_func(args.rnn_size, initializer=self.graves_initializer)
+        self.cell2 = cell_func(args.rnn_size, initializer=self.graves_initializer)
 
         if self.train and self.dropout < 1:  # training mode
             self.cell0 = tf.nn.RNNCellDropoutWrapper(self.cell0, output_keep_prob=self.dropout)
@@ -53,14 +75,14 @@ class Model:
         # slice the input volume into separate vols for each tstep
         inputs = [tf.squeeze(input_, [1]) for input_ in tf.split(self.input_data, self.tsteps, 1)]
         # build cell0 computational graph
-        outs_cell0, self.fstate_cell0 = tf.contrib.legacy_seq2seq.rnn_decoder(inputs, self.istate_cell0, self.cell0,
-                                                                              loop_function=None, scope='cell0')
+        outs_cell0, self.fstate_cell0 = rnn_decoder(inputs, self.istate_cell0, self.cell0,
+                                                    loop_function=None, scope='cell0')
 
         # ----- build the gaussian character window
         def get_window(alpha, beta, kappa, c):
             # phi -> [? x 1 x ascii_steps] and is a tf matrix
             # c -> [? x ascii_steps x alphabet] and is a tf matrix
-            ascii_steps = c.get_shape()[1].value  # number of items in sequence
+            ascii_steps = c.get_shape()[1]  # number of items in sequence
             phi = get_phi(ascii_steps, alpha, beta, kappa)
             window = tf.matmul(phi, c)
             window = tf.squeeze(window, [1])  # window ~ [?,alphabet]
@@ -112,11 +134,11 @@ class Model:
         self.alpha = alpha
 
         # ----- finish building LSTMs 2 and 3
-        outs_cell1, self.fstate_cell1 = tf.contrib.legacy_seq2seq.rnn_decoder(outs_cell0, self.istate_cell1, self.cell1,
-                                                                              loop_function=None, scope='cell1')
+        outs_cell1, self.fstate_cell1 = rnn_decoder(outs_cell0, self.istate_cell1, self.cell1,
+                                                    loop_function=None, scope='cell1')
 
-        outs_cell2, self.fstate_cell2 = tf.contrib.legacy_seq2seq.rnn_decoder(outs_cell1, self.istate_cell2, self.cell2,
-                                                                              loop_function=None, scope='cell2')
+        outs_cell2, self.fstate_cell2 = rnn_decoder(outs_cell1, self.istate_cell2, self.cell2,
+                                                    loop_function=None, scope='cell2')
 
         # ----- start building the Mixture Density Network on top (start with a dense layer to predict the MDN params)
         n_out = 1 + self.nmixtures * 6  # params = end_of_stroke + 6 parameters per Gaussian
