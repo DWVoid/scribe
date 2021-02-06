@@ -56,7 +56,7 @@ def main():
 
 
 def train_model(args):
-    #tf.compat.v1.disable_eager_execution()
+    # tf.compat.v1.disable_eager_execution()
     logger = Logger(args)  # make logging utility
     logger.write("\nTRAINING MODE...")
     logger.write("{}\n".format(args))
@@ -65,54 +65,23 @@ def train_model(args):
 
     logger.write("building model...")
     model = Model(args, logger=logger)
+    model.setup(
+        args.optimizer, args.learning_rate, args.decay, args.momentum, args.lr_decay, args.nbatches * args.batch_size
+    )
 
     logger.write("attempt to load saved model...")
     load_was_success, global_step = model.try_load_model(args.save_path)
 
-    v_x, v_y, v_s, v_c = data_loader.validation_data()
-    valid_inputs = {model.input_data: v_x, model.target_data: v_y, model.char_seq: v_c}
-
     logger.write("training...")
-    model.sess.run(tf.compat.v1.assign(model.decay, args.decay))
-    model.sess.run(tf.compat.v1.assign(model.momentum, args.momentum))
-    running_average = 0.0
-    remember_rate = 0.99
-    for e in range(int(global_step / args.nbatches), args.nepochs):
-        model.sess.run(tf.compat.v1.assign(model.learning_rate, args.learning_rate * (args.lr_decay ** e)))
-        logger.write("learning rate: {}".format(model.learning_rate.eval()))
+    [v_x, v_y, v_c] = data_loader.validation_data()
+    [t_x, t_y, t_c] = data_loader.training_data(args.nbatches)
 
-        c0, c1, c2 = model.istate_cell0.c.eval(), model.istate_cell1.c.eval(), model.istate_cell2.c.eval()
-        h0, h1, h2 = model.istate_cell0.h.eval(), model.istate_cell1.h.eval(), model.istate_cell2.h.eval()
-        kappa = np.zeros((args.batch_size, args.kmixtures, 1))
-
-        for b in range(global_step % args.nbatches, args.nbatches):
-            i = e * args.nbatches + b
-            if global_step != 0: i += 1; global_step = 0
-
-            if i % args.save_every == 0 and (i > 0):
-                model.saver.save(model.sess, args.save_path, global_step=i)
-                logger.write('SAVED MODEL')
-
-            start = time.time()
-            x, y, s, c = data_loader.next_batch()
-
-            feed = {model.input_data: x, model.target_data: y, model.char_seq: c, model.init_kappa: kappa,
-                    model.istate_cell0.c: c0, model.istate_cell1.c: c1, model.istate_cell2.c: c2,
-                    model.istate_cell0.h: h0, model.istate_cell1.h: h1, model.istate_cell2.h: h2}
-
-            [train_loss, _] = model.sess.run([model.cost, model.train_op], feed)
-            feed.update(valid_inputs)
-            feed[model.init_kappa] = np.zeros((args.batch_size, args.kmixtures, 1))
-            [valid_loss] = model.sess.run([model.cost], feed)
-
-            running_average = running_average * remember_rate + train_loss * (1 - remember_rate)
-
-            end = time.time()
-            if i % 10 == 0:
-                logger.write(
-                    "{}/{}, loss = {:.3f}, regloss = {:.5f}, valid_loss = {:.3f}, time = {:.3f}"
-                        .format(i, args.nepochs * args.nbatches, train_loss, running_average, valid_loss, end - start)
-                )
+    model.train_network(
+        train=tf.data.Dataset.from_tensor_slices(({'stroke': t_x, 'char': t_c}, t_y)).batch(args.batch_size),
+        validation=tf.data.Dataset.from_tensor_slices(({'stroke': v_x, 'char': v_c}, v_y)).batch(args.batch_size),
+        epochs=args.nepochs,
+    )
+    #kappa = np.zeros((args.batch_size, args.kmixtures, 1))
 
 
 def sample_model(args, logger=None):

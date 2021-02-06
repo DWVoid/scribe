@@ -1,13 +1,12 @@
 import tensorflow as tf
 from utils import *
 
+
 # noinspection PyAttributeOutsideInit
 class GaussianAttention(tf.keras.layers.Layer):
-    def __init__(self, kmixtures, ascii_steps, char_vec_len, window_w_initializer, window_b_initializer):
+    def __init__(self, kmixtures, window_w_initializer, window_b_initializer):
         super(GaussianAttention, self).__init__()
         self.kmixtures = kmixtures
-        self.ascii_steps = ascii_steps
-        self.char_vec_len = char_vec_len
         self.window_w_initializer = window_w_initializer
         self.window_b_initializer = window_b_initializer
 
@@ -16,17 +15,17 @@ class GaussianAttention(tf.keras.layers.Layer):
         hidden = input_shape[2]
         n_out = 3 * self.kmixtures
         self.init_kappa = self.add_weight("init_kappa", shape=[batch, self.kmixtures, 1])
-        self.char_seq = self.add_weight("char_seq", shape=[batch, self.ascii_steps, self.char_vec_len])
         self.window_w = self.add_weight("window_w", shape=[hidden, n_out], initializer=self.window_w_initializer)
         self.window_b = self.add_weight("window_b", shape=[n_out], initializer=self.window_b_initializer)
 
     def call(self, input0, **kwargs):
-        assoc = tf.unstack(kwargs['original'], axis=1)
+        assoc = tf.unstack(kwargs['stroke'], axis=1)
         result = tf.unstack(input0, axis=1)
         prev_kappa = self.init_kappa
+        char_seq = kwargs['char']
         for i in range(len(result)):
             [alpha, beta, new_kappa] = self.get_window_params(result[i], prev_kappa)
-            window, phi = self.get_window(alpha, beta, new_kappa, self.char_seq)
+            window, phi = self.get_window(alpha, beta, new_kappa, char_seq)
             result[i] = tf.concat((result[i], window, assoc[i]), 1)
             prev_kappa = new_kappa
         return tf.stack(result, axis=1)
@@ -75,24 +74,51 @@ class MDN(tf.keras.layers.Layer):
     def call(self, input0, **kwargs):
         flattened = tf.reshape(tf.concat(input0, 0), [-1, self.rnn_size])  # concat outputs for efficiency
         dense = tf.add(tf.matmul(flattened, self.mdn_w), self.mdn_b)
-        # now transform dense NN outputs into params for MDN
-        [self.eos, self.pi, self.mu1, self.mu2, self.sigma1, self.sigma2, self.rho] = self.get_mdn_coef(dense)
-        return input0
+        return tf.stack(dense)
 
-    def get_mdn_coef(self, Z):
-        # returns the tf slices containing mdn dist params (eq 18...23 of http://arxiv.org/abs/1308.0850)
-        eos_hat = Z[:, 0:1]  # end of sentence tokens
-        pi_hat, mu1_hat, mu2_hat, sigma1_hat, sigma2_hat, rho_hat = tf.split(Z[:, 1:], 6, 1)
-        # these are useful for bias method during sampling
-        self.pi_hat, self.sigma1_hat, self.sigma2_hat = pi_hat, sigma1_hat, sigma2_hat
-        eos = tf.sigmoid(-1 * eos_hat)  # technically we gained a negative sign
-        pi = tf.nn.softmax(pi_hat)  # softmax z_pi:
-        mu1 = mu1_hat
-        mu2 = mu2_hat  # leave mu1, mu2 as they are
-        sigma1 = tf.exp(sigma1_hat)
-        sigma2 = tf.exp(sigma2_hat)  # exp for sigmas
-        rho = tf.tanh(rho_hat)  # tanh for rho (squish between -1 and 1)
-        return [eos, pi, mu1, mu2, sigma1, sigma2, rho]
+
+# transform dense NN outputs into params for MDN
+def get_mdn_coef(dense):
+    # returns the tf slices containing mdn dist params (eq 18...23 of http://arxiv.org/abs/1308.0850)
+    eos_hat = dense[:, 0:1]  # end of sentence tokens
+    pi_hat, mu1, mu2, sigma1_hat, sigma2_hat, rho_hat = tf.split(dense[:, 1:], 6, 1)
+    eos = tf.sigmoid(-1 * eos_hat)  # technically we gained a negative sign
+    pi = tf.nn.softmax(pi_hat)  # softmax z_pi:
+    sigma1 = tf.exp(sigma1_hat)
+    sigma2 = tf.exp(sigma2_hat)  # exp for sigmas
+    rho = tf.tanh(rho_hat)  # tanh for rho (squish between -1 and 1)
+    return [pi, pi_hat, sigma1, sigma2, sigma1_hat, sigma2_hat, eos, mu1, mu2, rho]
+
+
+# define gaussian mdn (eq 24, 25 from http://arxiv.org/abs/1308.0850)
+def gaussian2d(x1, x2, mu1, mu2, s1, s2, rho):
+    x_mu1 = tf.subtract(x1, mu1)
+    x_mu2 = tf.subtract(x2, mu2)
+    Z = tf.square(tf.divide(x_mu1, s1)) + \
+        tf.square(tf.divide(x_mu2, s2)) - \
+        2 * tf.divide(tf.multiply(rho, tf.multiply(x_mu1, x_mu2)), tf.multiply(s1, s2))
+    rho_square_term = 1 - tf.square(rho)
+    power_e = tf.exp(tf.divide(-Z, 2 * rho_square_term))
+    regularize_term = 2 * np.pi * tf.multiply(tf.multiply(s1, s2), tf.sqrt(rho_square_term))
+    gaussian = tf.divide(power_e, regularize_term)
+    return gaussian
+
+
+# define loss function (eq 26 of http://arxiv.org/abs/1308.0850)
+def get_loss(pi, x1_data, x2_data, eos_data, mu1, mu2, sigma1, sigma2, rho, eos):
+    gaussian = gaussian2d(x1_data, x2_data, mu1, mu2, sigma1, sigma2, rho)
+    term1 = tf.multiply(gaussian, pi)
+    term1 = tf.reduce_sum(input_tensor=term1, axis=1, keepdims=True)  # do inner summation
+    term1 = -tf.math.log(tf.maximum(term1, 1e-20))  # some errors are zero -> numerical errors.
+    term2 = tf.multiply(eos, eos_data) + tf.multiply(1 - eos, 1 - eos_data)  # modified Bernoulli -> eos probability
+    term2 = -tf.math.log(term2)  # negative log error gives loss
+    return tf.reduce_sum(input_tensor=term1 + term2)  # do outer summation
+
+
+def tf2_loss(y_true, y_pred):
+    [pi, _, sigma1, sigma2, _, _, eos, mu1, mu2, rho] = get_mdn_coef(y_pred)
+    [x1_data, x2_data, eos_data] = tf.split(tf.reshape(y_true, [-1, 3]), 3, 1)
+    return get_loss(pi, x1_data, x2_data, eos_data, mu1, mu2, sigma1, sigma2, rho, eos)
 
 
 class Model:
@@ -102,15 +128,11 @@ class Model:
         # ----- transfer some of the args params over to the model
 
         # model params
-        self.rnn_size = args.rnn_size
         self.train = args.train
-        self.nmixtures = args.nmixtures
-        self.kmixtures = args.kmixtures
         self.batch_size = args.batch_size if self.train else 1  # training/sampling specific
         self.tsteps = args.tsteps if self.train else 1  # training/sampling specific
         self.alphabet = args.alphabet
         # training params
-        self.dropout = args.dropout
         self.grad_clip = args.grad_clip
         # misc
         self.tsteps_per_ascii = args.tsteps_per_ascii
@@ -120,64 +142,51 @@ class Model:
         self.char_vec_len = len(self.alphabet) + 1  # plus one for <UNK> token
         self.ascii_steps = int(args.tsteps / args.tsteps_per_ascii)
 
-        self.graves_initializer = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.075)
-        self.window_b_initializer = tf.keras.initializers.TruncatedNormal(mean=-3.0, stddev=0.25)
+        graves_initializer = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.075)
+        window_b_initializer = tf.keras.initializers.TruncatedNormal(mean=-3.0, stddev=0.25)
 
-        # build the network
-        network_input = tf.keras.layers.Input(shape=(self.tsteps, 3,), batch_size=self.batch_size)
-
+        # define the network layers
+        cell0 = tf.keras.layers.LSTM(
+            args.rnn_size, return_sequences=True, kernel_initializer=graves_initializer, dropout=args.dropout
+        )
         cell1 = tf.keras.layers.LSTM(
-            args.rnn_size, return_sequences=True, kernel_initializer=self.graves_initializer, dropout=self.dropout
+            args.rnn_size, return_sequences=True, kernel_initializer=graves_initializer, dropout=args.dropout
         )
         cell2 = tf.keras.layers.LSTM(
-            args.rnn_size, return_sequences=True, kernel_initializer=self.graves_initializer, dropout=self.dropout
+            args.rnn_size, return_sequences=True, kernel_initializer=graves_initializer, dropout=args.dropout
         )
-        cell3 = tf.keras.layers.LSTM(
-            args.rnn_size, return_sequences=True, kernel_initializer=self.graves_initializer, dropout=self.dropout
+        attention = GaussianAttention(args.kmixtures, graves_initializer, window_b_initializer)
+        mdn = MDN(args.rnn_size, args.nmixtures, graves_initializer)
+
+        # link the network
+        model_stroke = tf.keras.layers.Input(
+            name='stroke', shape=(self.tsteps, 3,), batch_size=self.batch_size
         )
+        model_char = tf.keras.layers.Input(
+            name='char', shape=(self.ascii_steps, self.char_vec_len,), batch_size=self.batch_size
+        )
+        model_out = mdn(cell2(cell1(attention(cell0(model_stroke), stroke=model_stroke, char=model_char))))
+        self.model = tf.keras.Model([model_stroke, model_char], model_out)
+        self.model.summary()
+        # self.cost = loss / (self.batch_size * self.tsteps)
 
-        out_lstm1 = cell1(network_input)
-        out_attention = GaussianAttention(
-            self.kmixtures, self.ascii_steps, self.char_vec_len,
-            self.graves_initializer, self.window_b_initializer
-        )(out_lstm1, original=network_input)
-        out_lstm2 = cell2(out_attention)
-        out_lstm3 = cell3(out_lstm2)
-        out_mdn = MDN(args.rnn_size, self.nmixtures, self.graves_initializer)(out_lstm3)
-        model = tf.keras.Model([network_input], out_mdn)
-
-        model.summary()
-
-        # reshape target data (as we did the input data)
-        flat_target_data = tf.reshape(self.target_data, [-1, 3])
-        [x1_data, x2_data, eos_data] = tf.split(flat_target_data, 3, 1)  # we might as well split these now
-
-        loss = self.get_loss(self.pi, x1_data, x2_data, eos_data, self.mu1, self.mu2, self.sigma1, self.sigma2,
-                             self.rho,
-                             self.eos)
-        self.cost = loss / (self.batch_size * self.tsteps)
-
-        # ----- bring together all variables and prepare for training
-        self.learning_rate = tf.Variable(0.0, trainable=False)
-        self.decay = tf.Variable(0.0, trainable=False)
-        self.momentum = tf.Variable(0.0, trainable=False)
-
-        tvars = tf.compat.v1.trainable_variables()
-        grads, _ = tf.clip_by_global_norm(tf.gradients(ys=self.cost, xs=tvars), self.grad_clip)
-
-        if args.optimizer == 'adam':
-            self.optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=self.learning_rate)
-        elif args.optimizer == 'rmsprop':
-            self.optimizer = tf.compat.v1.train.RMSPropOptimizer(learning_rate=self.learning_rate, decay=self.decay,
-                                                                 momentum=self.momentum)
+    def setup(self, optimizer, learning_rate, decay, momentum, lr_decay, epoch_size):
+        rate = tf.keras.optimizers.schedules.ExponentialDecay(learning_rate, epoch_size, lr_decay)
+        if optimizer == 'adam':
+            s_optimizer = tf.keras.optimizers.Adam(learning_rate=rate)
+        elif optimizer == 'rmsprop':
+            s_optimizer = tf.keras.optimizers.RMSprop(learning_rate=rate, rho=decay, momentum=momentum)
         else:
             raise ValueError("Optimizer type not recognized")
-        self.train_op = self.optimizer.apply_gradients(list(zip(grads, tvars)))
+        self.model.compile(optimizer=s_optimizer, loss=tf2_loss)
 
-        # ----- some TensorFlow I/O
-        self.sess = tf.compat.v1.InteractiveSession()
-        self.saver = tf.compat.v1.train.Saver(tf.compat.v1.global_variables())
-        self.sess.run(tf.compat.v1.global_variables_initializer())
+    def train_network(self, train, validation, epochs):
+        # model training setup
+        self.model.fit(
+            x=train,
+            validation_data=validation,
+            epochs=epochs,
+        )
 
     # ----- for restoring previous models
     def try_load_model(self, save_path):
@@ -196,32 +205,3 @@ class Model:
             self.saver = tf.compat.v1.train.Saver(tf.compat.v1.global_variables())
             global_step = int(load_path.split('-')[-1])
         return load_was_success, global_step
-
-    # Util methods for building the model
-
-    # ----- build mixture density cap on top of second recurrent cell
-    def gaussian2d(self, x1, x2, mu1, mu2, s1, s2, rho):
-        # define gaussian mdn (eq 24, 25 from http://arxiv.org/abs/1308.0850)
-        x_mu1 = tf.subtract(x1, mu1)
-        x_mu2 = tf.subtract(x2, mu2)
-        Z = tf.square(tf.divide(x_mu1, s1)) + \
-            tf.square(tf.divide(x_mu2, s2)) - \
-            2 * tf.divide(tf.multiply(rho, tf.multiply(x_mu1, x_mu2)), tf.multiply(s1, s2))
-        rho_square_term = 1 - tf.square(rho)
-        power_e = tf.exp(tf.divide(-Z, 2 * rho_square_term))
-        regularize_term = 2 * np.pi * tf.multiply(tf.multiply(s1, s2), tf.sqrt(rho_square_term))
-        gaussian = tf.divide(power_e, regularize_term)
-        return gaussian
-
-    def get_loss(self, pi, x1_data, x2_data, eos_data, mu1, mu2, sigma1, sigma2, rho, eos):
-        # define loss function (eq 26 of http://arxiv.org/abs/1308.0850)
-        gaussian = self.gaussian2d(x1_data, x2_data, mu1, mu2, sigma1, sigma2, rho)
-        term1 = tf.multiply(gaussian, pi)
-        term1 = tf.reduce_sum(input_tensor=term1, axis=1, keepdims=True)  # do inner summation
-        term1 = -tf.math.log(tf.maximum(term1, 1e-20))  # some errors are zero -> numerical errors.
-
-        term2 = tf.multiply(eos, eos_data) + tf.multiply(1 - eos,
-                                                         1 - eos_data)  # modified Bernoulli -> eos probability
-        term2 = -tf.math.log(term2)  # negative log error gives loss
-
-        return tf.reduce_sum(input_tensor=term1 + term2)  # do outer summation

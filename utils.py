@@ -132,27 +132,29 @@ class DataLoader:
         y_batch = []
         ascii_list = []
         for i in range(self.batch_size):
-            valid_ix = i % len(self.valid_stroke_data)
-            data = self.valid_stroke_data[valid_ix]
+            index = i % len(self.valid_stroke_data)
+            data = self.valid_stroke_data[index]
             x_batch.append(np.copy(data[:self.tsteps]))
             y_batch.append(np.copy(data[1:self.tsteps + 1]))
-            ascii_list.append(self.valid_ascii_data[valid_ix])
+            ascii_list.append(self.valid_ascii_data[index])
         one_hots = [to_one_hot(s, self.ascii_steps, self.alphabet) for s in ascii_list]
-        return x_batch, y_batch, ascii_list, one_hots
+        return x_batch, y_batch, one_hots
 
-    # returns a randomized, tsteps-sized portion of the training data
-    def next_batch(self):
+    # returns (batches) randomized, tsteps-sized portion of the training data
+    def training_data(self, batches):
         x_batch = []
         y_batch = []
         ascii_list = []
-        for i in range(self.batch_size):
-            data = self.stroke_data[self.idx_perm[self.pointer]]
-            x_batch.append(np.copy(data[:self.tsteps]))
-            y_batch.append(np.copy(data[1:self.tsteps + 1]))
-            ascii_list.append(self.ascii_data[self.idx_perm[self.pointer]])
-            self.tick_batch_pointer()
+        for _ in range(batches):
+            for i in range(self.batch_size):
+                index = self.idx_perm[self.pointer]
+                data = self.stroke_data[index]
+                x_batch.append(np.copy(data[:self.tsteps]))
+                y_batch.append(np.copy(data[1:self.tsteps + 1]))
+                ascii_list.append(self.ascii_data[index])
+                self.tick_batch_pointer()
         one_hots = [to_one_hot(s, self.ascii_steps, self.alphabet) for s in ascii_list]
-        return x_batch, y_batch, ascii_list, one_hots
+        return x_batch, y_batch, one_hots
 
     def tick_batch_pointer(self):
         self.pointer += 1
