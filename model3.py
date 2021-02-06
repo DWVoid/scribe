@@ -1,29 +1,6 @@
 import tensorflow as tf
 from utils import *
 
-
-def rnn_decoder(decoder_inputs, initial_state, cell):
-    state = initial_state
-    outputs = []
-    for i, inp in enumerate(decoder_inputs):
-        output, state = cell(inp, states=state)
-        outputs.append(output)
-    return outputs
-
-
-# slice the input volume into separate vols for each tstep
-class InputSlicer(tf.keras.layers.Layer):
-    def __init__(self, tsteps):
-        super(InputSlicer, self).__init__()
-        self.tsteps = tsteps
-
-    def build(self, input_shape):
-        pass
-
-    def call(self, input0, **kwargs):
-        return [tf.squeeze(part, [1]) for part in tf.split(input0, self.tsteps, 1)]
-
-
 # noinspection PyAttributeOutsideInit
 class GaussianAttention(tf.keras.layers.Layer):
     def __init__(self, kmixtures, ascii_steps, char_vec_len, window_w_initializer, window_b_initializer):
@@ -35,21 +12,24 @@ class GaussianAttention(tf.keras.layers.Layer):
         self.window_b_initializer = window_b_initializer
 
     def build(self, input_shape):
-        hidden = input_shape[1]
+        batch = input_shape[0]
+        hidden = input_shape[2]
         n_out = 3 * self.kmixtures
-        self.init_kappa = self.add_weight("init_kappa", shape=[None, self.kmixtures, 1])
-        self.char_seq = self.add_weight("char_seq", shape=[None, self.ascii_steps, self.char_vec_len])
+        self.init_kappa = self.add_weight("init_kappa", shape=[batch, self.kmixtures, 1])
+        self.char_seq = self.add_weight("char_seq", shape=[batch, self.ascii_steps, self.char_vec_len])
         self.window_w = self.add_weight("window_w", shape=[hidden, n_out], initializer=self.window_w_initializer)
         self.window_b = self.add_weight("window_b", shape=[n_out], initializer=self.window_b_initializer)
 
     def call(self, input0, **kwargs):
+        assoc = tf.unstack(kwargs['original'], axis=1)
+        result = tf.unstack(input0, axis=1)
         prev_kappa = self.init_kappa
-        for i in range(len(input0)):
-            [alpha, beta, new_kappa] = self.get_window_params(input0[i], prev_kappa)
+        for i in range(len(result)):
+            [alpha, beta, new_kappa] = self.get_window_params(result[i], prev_kappa)
             window, phi = self.get_window(alpha, beta, new_kappa, self.char_seq)
-            input0[i] = tf.concat((input0[i], window), 1)  # concat outputs
-            input0[i] = tf.concat((input0[i], kwargs['original'][i]), 1)  # concat input data
+            result[i] = tf.concat((result[i], window, assoc[i]), 1)
             prev_kappa = new_kappa
+        return tf.stack(result, axis=1)
 
     # ----- build the gaussian character window
     def get_window(self, alpha, beta, kappa, c):
@@ -71,7 +51,7 @@ class GaussianAttention(tf.keras.layers.Layer):
         return tf.reduce_sum(input_tensor=phi_k, axis=1, keepdims=True)  # phi ~ [?,1,ascii_steps]
 
     def get_window_params(self, out_cell0, prev_kappa):
-        abk_hats = tf.compat.v1.nn.xw_plus_b(out_cell0, self.window_w, self.window_b)  # abk_hats ~ [?,n_out]
+        abk_hats = tf.add(tf.matmul(out_cell0, self.window_w), self.window_b)  # abk_hats ~ [?,n_out]
         # abk_hats ~ [?,n_out] = "alpha, beta, kappa hats"
         abk = tf.exp(tf.reshape(abk_hats, [-1, 3 * self.kmixtures, 1]))
         alpha, beta, kappa = tf.split(abk, 3, 1)  # alpha_hat, etc ~ [?,kmixtures]
@@ -93,7 +73,8 @@ class MDN(tf.keras.layers.Layer):
         self.mdn_b = self.add_weight("output_b", shape=[n_out], initializer=self.initializer)
 
     def call(self, input0, **kwargs):
-        dense = tf.add(tf.matmul(input0, self.mdn_w), self.mdn_b)
+        flattened = tf.reshape(tf.concat(input0, 0), [-1, self.rnn_size])  # concat outputs for efficiency
+        dense = tf.add(tf.matmul(flattened, self.mdn_w), self.mdn_b)
         # now transform dense NN outputs into params for MDN
         [self.eos, self.pi, self.mu1, self.mu2, self.sigma1, self.sigma2, self.rho] = self.get_mdn_coef(dense)
         return input0
@@ -143,42 +124,33 @@ class Model:
         self.window_b_initializer = tf.keras.initializers.TruncatedNormal(mean=-3.0, stddev=0.25)
 
         # build the network
-        network_input = tf.keras.layers.Input(shape=[None, self.tsteps, 3])
-        out_sliced = InputSlicer(self.tsteps)(network_input)
+        network_input = tf.keras.layers.Input(shape=(self.tsteps, 3,), batch_size=self.batch_size)
 
-        cell1 = tf.keras.layers.LSTMCell(
-            args.rnn_size, kernel_initializer=self.graves_initializer, dropout=self.dropout
+        cell1 = tf.keras.layers.LSTM(
+            args.rnn_size, return_sequences=True, kernel_initializer=self.graves_initializer, dropout=self.dropout
         )
-        cell2 = tf.keras.layers.LSTMCell(
-            args.rnn_size, kernel_initializer=self.graves_initializer, dropout=self.dropout
+        cell2 = tf.keras.layers.LSTM(
+            args.rnn_size, return_sequences=True, kernel_initializer=self.graves_initializer, dropout=self.dropout
         )
-        cell3 = tf.keras.layers.LSTMCell(
-            args.rnn_size, kernel_initializer=self.graves_initializer, dropout=self.dropout
+        cell3 = tf.keras.layers.LSTM(
+            args.rnn_size, return_sequences=True, kernel_initializer=self.graves_initializer, dropout=self.dropout
         )
 
-        out_lstm1 = rnn_decoder(out_sliced, cell1.get_initial_state(batch_size=self.batch_size, dtype=tf.float32), cell1)
+        out_lstm1 = cell1(network_input)
         out_attention = GaussianAttention(
             self.kmixtures, self.ascii_steps, self.char_vec_len,
             self.graves_initializer, self.window_b_initializer
-        )(out_lstm1, original=out_lstm1)
-        out_lstm2 = rnn_decoder(out_attention, cell1.get_initial_state(batch_size=self.batch_size, dtype=tf.float32), cell2)
-        out_lstm3 = rnn_decoder(out_lstm2, cell1.get_initial_state(batch_size=self.batch_size, dtype=tf.float32), cell3)
+        )(out_lstm1, original=network_input)
+        out_lstm2 = cell2(out_attention)
+        out_lstm3 = cell3(out_lstm2)
         out_mdn = MDN(args.rnn_size, self.nmixtures, self.graves_initializer)(out_lstm3)
         model = tf.keras.Model([network_input], out_mdn)
 
         model.summary()
 
-        if self.train and self.dropout < 1:  # training mode
-            self.cell0 = tf.nn.RNNCellDropoutWrapper(self.cell0, output_keep_prob=self.dropout)
-            self.cell1 = tf.nn.RNNCellDropoutWrapper(self.cell1, output_keep_prob=self.dropout)
-            self.cell2 = tf.nn.RNNCellDropoutWrapper(self.cell2, output_keep_prob=self.dropout)
-
-
         # reshape target data (as we did the input data)
         flat_target_data = tf.reshape(self.target_data, [-1, 3])
         [x1_data, x2_data, eos_data] = tf.split(flat_target_data, 3, 1)  # we might as well split these now
-
-
 
         loss = self.get_loss(self.pi, x1_data, x2_data, eos_data, self.mu1, self.mu2, self.sigma1, self.sigma2,
                              self.rho,
