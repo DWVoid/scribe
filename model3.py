@@ -77,6 +77,17 @@ class MDN(tf.keras.layers.Layer):
         return tf.stack(dense)
 
 
+class StateReset(tf.keras.callbacks.Callback):
+    def on_epoch_begin(self, epoch, logs=None):
+        self.execute()
+
+    def on_epoch_end(self, epoch, logs=None):
+        self.execute()
+
+    def execute(self):
+        pass
+
+
 # transform dense NN outputs into params for MDN
 def get_mdn_coef(dense):
     # returns the tf slices containing mdn dist params (eq 18...23 of http://arxiv.org/abs/1308.0850)

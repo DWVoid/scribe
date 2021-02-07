@@ -14,41 +14,38 @@ class DataParser:
     def run(self, stroke_dir, ascii_dir, writer_file, data_file):
         self.logger.write("\tparsing dataset...")
         form_to_writer = self.__load_writer_file(writer_file)
-        writer_to_data =  {}
+        writer_to_data = {}
 
         # for each line of words in the dir
         for stroke_file in self.__list_xml_files(stroke_dir):
             ascii_file = stroke_file.replace(stroke_dir, ascii_dir)[:-7] + '.txt'
             text_ascii = self.__load_ascii_file(ascii_file, int(stroke_file[-6:-4]) - 1)
-
-            # if the line is not too short
-            if len(text_ascii) > 10:
-                writer_id = form_to_writer.get(ascii_file.split("/")[-1][:-4], "")
-                # if cannot find writer id ignore this line
-                if writer_id == "": 
-                    self.logger.write("\tno wrter id. line was: " + text_ascii)
-                    continue
-                # add the strokes and asciis under the specific writer
-                strokes, asciis = writer_to_data.get(writer_id, [[],[]])
-                strokes.append(self.__stroke_to_array(self.__load_stroke_file(stroke_file)))
-                asciis.append(text_ascii)
-                writer_to_data[writer_id] = [strokes, asciis]
-            else:
+            if len(text_ascii) <= 10:
                 self.logger.write("\tline length was too short. line was: " + text_ascii)
-        
-        assert len(strokes) == len(asciis), "BUG BUG"
+                continue
+            writer_id = form_to_writer.get(ascii_file.split("/")[-1][:-4], "")
+            if writer_id == "":
+                self.logger.write("\tno writer id. line was: " + text_ascii)
+                continue
+            # add the strokes and asciis under the specific writer
+            strokes, asciis = writer_to_data.get(writer_id, [[], []])
+            strokes.append(self.__stroke_to_array(self.__load_stroke_file(stroke_file)))
+            asciis.append(text_ascii)
+            assert len(strokes) == len(asciis), "BUG BUG"
+            writer_to_data[writer_id] = [strokes, asciis]
+
         with open(data_file, 'wb') as f:
             pickle.dump(writer_to_data, f, protocol=2)
-        self.logger.write("\tfinished parsing dataset. saved {} lines".format(len(strokes)))
-    
+        self.logger.write("\tfinished parsing dataset")
+
     # read a writer file and return a dictionary from form id to the writer id
     def __load_writer_file(self, writer_file):
         with open(writer_file, 'r') as f:
             contents = f.readlines()
             # remove whitespace characters like `\n` at the end of each line
             contents = [x.strip().split(" ") for x in contents]
-            form_to_writer  = {content[0]:int(content[1]) for content in contents}
-        
+            form_to_writer = {content[0]: int(content[1]) for content in contents}
+
         return form_to_writer
 
     def __list_xml_files(self, root_dir):
@@ -114,7 +111,8 @@ class DataLoader:
 
         if not (os.path.exists(data_file)):
             self.logger.write("\tcreating training data cpkl file from raw source")
-            DataParser(logger).run(os.path.join(data_dir, 'lineStrokes'), os.path.join(data_dir, 'ascii'), os.path.join(data_dir, 'forms.txt'), data_file)
+            DataParser(logger).run(os.path.join(data_dir, 'lineStrokes'), os.path.join(data_dir, 'ascii'),
+                                   os.path.join(data_dir, 'forms.txt'), data_file)
 
         self.load_preprocessed(data_file)
         self.reset_batch_pointer()
