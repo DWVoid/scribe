@@ -79,7 +79,7 @@ def sample(input_text, model, args):
         # test if finished (has the read head seen the whole ascii sequence?)
         # main_kappa_idx = np.where(alpha[0]==np.max(alpha[0]));
         # finished = True if kappa[0][main_kappa_idx] > len(input_text) else False
-        finished = True if i > args.tsteps else False
+        finished = True if i > args.t_steps else False
 
         # new input is previous output
         prev_x[0][0] = np.array([x1, x2, eos], dtype=np.float32)

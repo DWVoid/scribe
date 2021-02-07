@@ -3,7 +3,7 @@ import argparse
 import time
 
 from model3 import Model
-from sample import *
+from sample import DataSource, Logger
 
 
 def main():
@@ -24,7 +24,7 @@ def main():
 
     # training params
     parser.add_argument('--batch_size', type=int, default=32, help='batch size for each gradient step')
-    parser.add_argument('--nbatches', type=int, default=500, help='number of batches per epoch')
+    parser.add_argument('--nbatches', type=int, default=10, help='number of batches per epoch')
     parser.add_argument('--nepochs', type=int, default=250, help='number of epochs')
     parser.add_argument('--dropout', type=float, default=0.85, help='probability of keeping neuron during dropout')
 
@@ -39,6 +39,7 @@ def main():
     parser.add_argument('--data_scale', type=int, default=50, help='amount to scale data down before training')
     parser.add_argument('--log_dir', type=str, default='./logs/', help='location, relative to execution, of log files')
     parser.add_argument('--data_dir', type=str, default='./data', help='location, relative to execution, of data')
+    parser.add_argument('--cache_dir', type=str, default="./cache", help='location, relative to execution, of cache')
     parser.add_argument('--save_path', type=str, default='saved/model.ckpt', help='location to save model')
     parser.add_argument('--save_every', type=int, default=500, help='number of batches between each save')
     parser.add_argument('--board_path', type=str, default="./tb_logs/", help='location, relative to execution, board')
@@ -57,26 +58,24 @@ def main():
 
 
 def train_model(args):
-    # tf.compat.v1.disable_eager_execution()
     logger = Logger(args)  # make logging utility
     logger.write("\nTRAINING MODE...")
     logger.write("{}\n".format(args))
     logger.write("loading data...")
-    data_loader = DataLoader(args, logger=logger)
+    data_loader = DataSource(args, logger=logger)
     model = Model(logger=logger)
     logger.write("building model...")
     model.build(args)
     logger.write("training...")
-    [v_x, v_y, v_c] = data_loader.validation_data()
-    [t_x, t_y, t_c] = data_loader.training_data(args.nbatches)
-    model.train_network(
-        train=tf.data.Dataset.from_tensor_slices(({'stroke': t_x, 'char': t_c}, t_y)).batch(args.batch_size),
-        validation=tf.data.Dataset.from_tensor_slices(({'stroke': v_x, 'char': v_c}, v_y)).batch(args.batch_size),
-        epochs=args.nepochs,
-        tensorboard_logs=args.board_path
-    )
-    model.save_model(args.save_path)
-    #kappa = np.zeros((args.batch_size, args.kmixtures, 1))
+    for writer, dataset in data_loader.datasets():
+        train, validation = dataset
+        model.train_network(
+            train=tf.data.Dataset.from_tensor_slices(train).batch(args.batch_size, drop_remainder=True),
+            validation=tf.data.Dataset.from_tensor_slices(validation).batch(args.batch_size, drop_remainder=True),
+            epochs=args.nepochs,
+            tensorboard_logs=args.board_path
+        )
+        model.save_model(args.save_path+writer)
 
 
 def sample_model(args, logger=None):

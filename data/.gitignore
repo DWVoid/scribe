@@ -1,6 +1,0 @@
-# Ignore everything
-*
-
-# Include the parsed tranining data and the styles data
-!strokes_training_data.cpkl
-!styles.p

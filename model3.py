@@ -14,14 +14,14 @@ class GaussianAttention(tf.keras.layers.Layer):
         batch = input_shape[0]
         hidden = input_shape[2]
         n_out = 3 * self.kmixtures
-        self.init_kappa = self.add_weight("init_kappa", shape=[batch, self.kmixtures, 1])
+        self.init_kappa = np.zeros((batch, self.kmixtures, 1))
         self.window_w = self.add_weight("window_w", shape=[hidden, n_out], initializer=self.window_w_initializer)
         self.window_b = self.add_weight("window_b", shape=[n_out], initializer=self.window_b_initializer)
 
     def call(self, input0, **kwargs):
         assoc = tf.unstack(kwargs['stroke'], axis=1)
         result = tf.unstack(input0, axis=1)
-        prev_kappa = self.init_kappa
+        prev_kappa = self.init_kappa.copy()
         char_seq = kwargs['char']
         for i in range(len(result)):
             [alpha, beta, new_kappa] = self.get_window_params(result[i], prev_kappa)
@@ -78,6 +78,12 @@ class MDN(tf.keras.layers.Layer):
 
 
 class StateReset(tf.keras.callbacks.Callback):
+    vars: (tf.Variable, object)
+
+    def __init__(self, op_vars: (tf.Variable, object)):
+        super(StateReset, self).__init__()
+        self.vars = op_vars
+
     def on_epoch_begin(self, epoch, logs=None):
         self.execute()
 
@@ -85,7 +91,8 @@ class StateReset(tf.keras.callbacks.Callback):
         self.execute()
 
     def execute(self):
-        pass
+        for (var, val) in self.vars:
+            var.assign(val)
 
 
 # transform dense NN outputs into params for MDN

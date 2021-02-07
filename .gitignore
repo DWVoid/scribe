@@ -4,6 +4,8 @@
 # PyCharm IDEA project folder
 .idea
 
-# Saved model
-saved
+# Databases and runtime generated datas
+/data/
+/cache/
+/saved/
 /tb_logs/
