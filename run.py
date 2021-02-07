@@ -41,6 +41,7 @@ def main():
     parser.add_argument('--data_dir', type=str, default='./data', help='location, relative to execution, of data')
     parser.add_argument('--save_path', type=str, default='saved/model.ckpt', help='location to save model')
     parser.add_argument('--save_every', type=int, default=500, help='number of batches between each save')
+    parser.add_argument('--board_path', type=str, default="./tb_logs/", help='location, relative to execution, board')
 
     # sampling
     parser.add_argument('--text', type=str, default='', help='string for sampling model (defaults to test cases)')
@@ -62,25 +63,19 @@ def train_model(args):
     logger.write("{}\n".format(args))
     logger.write("loading data...")
     data_loader = DataLoader(args, logger=logger)
-
+    model = Model(logger=logger)
     logger.write("building model...")
-    model = Model(args, logger=logger)
-    model.setup(
-        args.optimizer, args.learning_rate, args.decay, args.momentum, args.lr_decay, args.nbatches * args.batch_size
-    )
-
-    logger.write("attempt to load saved model...")
-    load_was_success, global_step = model.try_load_model(args.save_path)
-
+    model.build(args)
     logger.write("training...")
     [v_x, v_y, v_c] = data_loader.validation_data()
     [t_x, t_y, t_c] = data_loader.training_data(args.nbatches)
-
     model.train_network(
         train=tf.data.Dataset.from_tensor_slices(({'stroke': t_x, 'char': t_c}, t_y)).batch(args.batch_size),
         validation=tf.data.Dataset.from_tensor_slices(({'stroke': v_x, 'char': v_c}, v_y)).batch(args.batch_size),
         epochs=args.nepochs,
+        tensorboard_logs=args.board_path
     )
+    model.save_model(args.save_path)
     #kappa = np.zeros((args.batch_size, args.kmixtures, 1))
 
 
@@ -96,7 +91,7 @@ def sample_model(args, logger=None):
     logger.write("loading data...")
 
     logger.write("building model...")
-    model = Model(args, logger)
+    model = Model(logger)
 
     logger.write("attempt to load saved model...")
     load_was_success, global_step = model.try_load_model(args.save_path)

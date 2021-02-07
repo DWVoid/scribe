@@ -121,26 +121,23 @@ def tf2_loss(y_true, y_pred):
     return get_loss(pi, x1_data, x2_data, eos_data, mu1, mu2, sigma1, sigma2, rho, eos)
 
 
+# noinspection PyAttributeOutsideInit
 class Model:
-    def __init__(self, args, logger):
+    def __init__(self, logger):
         self.logger = logger
 
-        # ----- transfer some of the args params over to the model
-
+    def build(self, args):
         # model params
-        self.train = args.train
-        self.batch_size = args.batch_size if self.train else 1  # training/sampling specific
-        self.tsteps = args.tsteps if self.train else 1  # training/sampling specific
-        self.alphabet = args.alphabet
+        self.batch_size = args.batch_size if args.train else 1  # training/sampling specific
+        self.tsteps = args.tsteps if args.train else 1  # training/sampling specific
         # training params
         self.grad_clip = args.grad_clip
         # misc
         self.tsteps_per_ascii = args.tsteps_per_ascii
-        self.data_dir = args.data_dir
 
-        self.logger.write('\tusing alphabet{}'.format(self.alphabet))
-        self.char_vec_len = len(self.alphabet) + 1  # plus one for <UNK> token
-        self.ascii_steps = int(args.tsteps / args.tsteps_per_ascii)
+        self.logger.write('\tusing alphabet{}'.format(args.alphabet))
+        char_vec_len = len(args.alphabet) + 1  # plus one for <UNK> token
+        ascii_steps = int(args.tsteps / args.tsteps_per_ascii)
 
         graves_initializer = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.075)
         window_b_initializer = tf.keras.initializers.TruncatedNormal(mean=-3.0, stddev=0.25)
@@ -163,45 +160,44 @@ class Model:
             name='stroke', shape=(self.tsteps, 3,), batch_size=self.batch_size
         )
         model_char = tf.keras.layers.Input(
-            name='char', shape=(self.ascii_steps, self.char_vec_len,), batch_size=self.batch_size
+            name='char', shape=(ascii_steps, char_vec_len,), batch_size=self.batch_size
         )
         model_out = mdn(cell2(cell1(attention(cell0(model_stroke), stroke=model_stroke, char=model_char))))
         self.model = tf.keras.Model([model_stroke, model_char], model_out)
         self.model.summary()
         # self.cost = loss / (self.batch_size * self.tsteps)
 
-    def setup(self, optimizer, learning_rate, decay, momentum, lr_decay, epoch_size):
-        rate = tf.keras.optimizers.schedules.ExponentialDecay(learning_rate, epoch_size, lr_decay)
-        if optimizer == 'adam':
+        # define the training parameters and prepare for training
+        size = args.nbatches * args.batch_size
+        rate = tf.keras.optimizers.schedules.ExponentialDecay(args.learning_rate, size, args.lr_decay)
+        if args.optimizer == 'adam':
             s_optimizer = tf.keras.optimizers.Adam(learning_rate=rate)
-        elif optimizer == 'rmsprop':
-            s_optimizer = tf.keras.optimizers.RMSprop(learning_rate=rate, rho=decay, momentum=momentum)
+        elif args.optimizer == 'rmsprop':
+            s_optimizer = tf.keras.optimizers.RMSprop(learning_rate=rate, rho=args.decay, momentum=args.momentum)
         else:
             raise ValueError("Optimizer type not recognized")
         self.model.compile(optimizer=s_optimizer, loss=tf2_loss)
 
-    def train_network(self, train, validation, epochs):
+    def train_network(self, train, validation, epochs, tensorboard_logs):
+        tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=tensorboard_logs, histogram_freq=1)
         # model training setup
         self.model.fit(
             x=train,
             validation_data=validation,
             epochs=epochs,
+            callbacks=[tensorboard_callback]
         )
+
+    def save_model(self, save_path):
+        self.model.save(filepath=save_path)
 
     # ----- for restoring previous models
     def try_load_model(self, save_path):
-        load_was_success = True  # yes, I'm being optimistic
-        global_step = 0
         try:
-            save_dir = '/'.join(save_path.split('/')[:-1])
-            ckpt = tf.train.get_checkpoint_state(save_dir)
-            load_path = ckpt.model_checkpoint_path
-            self.saver.restore(self.sess, load_path)
-        except:
+            self.model = tf.keras.models.load_model(filepath=save_path)
+        except IOError:
             self.logger.write("no saved model to load. starting new session")
-            load_was_success = False
+            return True
         else:
-            self.logger.write("loaded model: {}".format(load_path))
-            self.saver = tf.compat.v1.train.Saver(tf.compat.v1.global_variables())
-            global_step = int(load_path.split('-')[-1])
-        return load_was_success, global_step
+            return False
+
