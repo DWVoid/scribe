@@ -1,10 +1,24 @@
-from __future__ import annotations
 from typing import *
 
-import numpy as np
 import os
+import shutil
+import numpy as np
 import pickle as pickle
 import xml.etree.ElementTree as ET
+
+
+# abstraction for logging
+class Logger:
+    def __init__(self, args):
+        self.path = os.path.join(args.log_dir, 'train_scribe.txt' if args.train else 'sample_scribe.txt')
+        with open(self.path, 'w') as f:
+            f.write("Scribe: Realistic Handriting in Tensorflow\n     by Sam Greydanus\n\n\n")
+
+    def write(self, s, print_it=True):
+        if print_it:
+            print(s)
+        with open(self.path, 'a') as f:
+            f.write(s + '\n')
 
 
 # stores the meta-data of the compiled Set. if this changes, the Set needs to be re-compiled
@@ -76,7 +90,7 @@ class DataSetCompiler:
                 self.logger.write("\tline length was too short. line was: " + text)
                 continue
             if len(strokes) < self.meta.t_steps + 1:
-                self.logger.write("\tlength of stroke points is less than 150. line was: " + text)
+                self.logger.write("\tnot enough stroke points. count: {} line: {}".format(len(strokes), text))
                 continue
             # every 1 in 20 (5%) will be reserved for validation data
             if cur_data_counter % 20 == 0:
@@ -291,14 +305,23 @@ class DataSource:
     def __try_parse_compile(self, meta: DataSetMeta, cache_dir: str, data_dir: str) -> bool:
         if not os.path.exists(data_dir):
             return False  # data not present
-        stokes_path: AnyStr = os.path.join(data_dir, 'lineStrokes')
-        ascii_path: AnyStr = os.path.join(data_dir, 'ascii')
+        ascii_path: AnyStr = os.path.join(cache_dir, 'ascii')
+        strokes_path: AnyStr = os.path.join(cache_dir, 'lineStrokes')
+        ascii_tar_path: AnyStr = os.path.join(data_dir, 'ascii-all.tar.gz')
+        strokes_tar_path: AnyStr = os.path.join(data_dir, 'lineStrokes-all.tar.gz')
         forms_path: AnyStr = os.path.join(data_dir, 'forms.txt')
-        if not (os.path.exists(stokes_path) and os.path.exists(ascii_path) and os.path.exists(forms_path)):
+        if not (os.path.exists(strokes_tar_path) and os.path.exists(ascii_tar_path) and os.path.exists(forms_path)):
             return False  # data partially missing
+        # unpack the tar data if that is not there
+        if not os.path.exists(strokes_path):
+            self.logger.write('\t\tunpacking strokes data...')
+            shutil.unpack_archive(strokes_tar_path, extract_dir=cache_dir)
+        if not os.path.exists(ascii_path):
+            self.logger.write('\t\tunpacking ascii data...')
+            shutil.unpack_archive(ascii_tar_path, extract_dir=cache_dir)
         # parse and save the raw Set
         parser = IAMParser(self.logger)
-        parsed = parser.run(stokes_path, ascii_path, forms_path)
+        parsed = parser.run(strokes_path, ascii_path, forms_path)
         raw_set = DataSetsRaw()
         raw_set.writers = list(parsed.keys())
         raw_set.datasets = parsed
@@ -316,17 +339,3 @@ class DataSource:
     def __pickle_save(file: AnyStr, obj: object) -> None:
         with open(file, 'wb') as f:
             pickle.dump(obj, f, protocol=2)
-
-
-# abstraction for logging
-class Logger:
-    def __init__(self, args):
-        self.path = os.path.join(args.log_dir, 'train_scribe.txt' if args.train else 'sample_scribe.txt')
-        with open(self.path, 'w') as f:
-            f.write("Scribe: Realistic Handriting in Tensorflow\n     by Sam Greydanus\n\n\n")
-
-    def write(self, s, print_it=True):
-        if print_it:
-            print(s)
-        with open(self.path, 'a') as f:
-            f.write(s + '\n')
