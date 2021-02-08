@@ -206,6 +206,12 @@ class Model:
             callbacks=[tensorboard_callback]
         )
 
+    def save_weights(self, save_path):
+        return self.model.save_weights(save_path)
+
+    def load_weights(self, save_path):
+        self.model.load_weights(save_path)
+
     def save_model(self, save_path):
         self.model.save(filepath=save_path)
 

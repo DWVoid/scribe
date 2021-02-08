@@ -66,8 +66,11 @@ def train_model(args):
     model = Model(logger=logger)
     logger.write("building model...")
     model.build(args)
+    model.save_weights(args.save_path + 'raw')
     logger.write("training...")
     for writer, dataset in data_loader.datasets():
+        logger.write("reloading model...")
+        model.load_weights(args.save_path + 'raw')
         train, validation = dataset
         model.train_network(
             train=tf.data.Dataset.from_tensor_slices(train).batch(args.batch_size, drop_remainder=True),
@@ -75,7 +78,8 @@ def train_model(args):
             epochs=args.nepochs,
             tensorboard_logs=args.board_path
         )
-        model.save_model(args.save_path+writer)
+        logger.write("saving model...")
+        model.save_model(args.save_path+str(writer))
 
 
 def sample_model(args, logger=None):
