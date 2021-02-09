@@ -203,7 +203,8 @@ class Model:
             x=train,
             validation_data=validation,
             epochs=epochs,
-            callbacks=[tensorboard_callback]
+            callbacks=[tensorboard_callback],
+            verbose=2
         )
 
     def save_weights(self, save_path):
@@ -224,4 +225,3 @@ class Model:
             return True
         else:
             return False
-

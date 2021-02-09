@@ -1,6 +1,7 @@
 import tensorflow as tf
 import argparse
 import time
+import os
 
 from model3 import Model
 from sample import DataSource, Logger
@@ -69,17 +70,21 @@ def train_model(args):
     model.save_weights(args.save_path + 'raw')
     logger.write("training...")
     for writer, dataset in data_loader.datasets():
-        logger.write("reloading model...")
-        model.load_weights(args.save_path + 'raw')
-        train, validation = dataset
-        model.train_network(
-            train=tf.data.Dataset.from_tensor_slices(train).batch(args.batch_size, drop_remainder=True),
-            validation=tf.data.Dataset.from_tensor_slices(validation).batch(args.batch_size, drop_remainder=True),
-            epochs=args.nepochs,
-            tensorboard_logs=args.board_path
-        )
-        logger.write("saving model...")
-        model.save_model(args.save_path+str(writer))
+        path = args.save_path + str(writer)
+        if not os.path.exists(path):
+            logger.write("reloading model...")
+            model.load_weights(args.save_path + 'raw')
+            train, validation = dataset
+            model.train_network(
+                train=tf.data.Dataset.from_tensor_slices(train).batch(args.batch_size, drop_remainder=True),
+                validation=tf.data.Dataset.from_tensor_slices(validation).batch(args.batch_size, drop_remainder=True),
+                epochs=args.nepochs,
+                tensorboard_logs=args.board_path
+            )
+            logger.write("saving model...")
+            model.save_model(path)
+        else:
+            logger.write("already exists, skipping writer: {}".format(writer))
 
 
 def sample_model(args, logger=None):
