@@ -1,4 +1,4 @@
-from utils import *
+from data import *
 
 
 def sample_gaussian2d(mu1, mu2, s1, s2, rho):
@@ -54,11 +54,11 @@ def sample(input_text, model, args):
                  model.window, model.phi, model.new_kappa, model.alpha,
                  model.fstate_cell0.c, model.fstate_cell1.c, model.fstate_cell2.c,
                  model.fstate_cell0.h, model.fstate_cell1.h, model.fstate_cell2.h]
-        [pi_hat, mu1, mu2, sigma1_hat, sigma2_hat, rho, eos, window, phi, kappa, alpha,
+        [pi_hat, mu1, mu2, sigma1_hat, sigma2_hat, rho, eos, _, _, kappa, _,
          c0, c1, c2, h0, h1, h2] = model.sess.run(fetch, feed)
 
         # bias stuff:
-        sigma1 = np.exp(sigma1_hat - args.bias);
+        sigma1 = np.exp(sigma1_hat - args.bias)
         sigma2 = np.exp(sigma2_hat - args.bias)
         pi_hat *= 1 + args.bias  # apply bias
         pi = np.zeros_like(pi_hat)  # need to preallocate
@@ -70,10 +70,6 @@ def sample(input_text, model, args):
         x1, x2 = sample_gaussian2d(mu1[0][idx], mu2[0][idx], sigma1[0][idx], sigma2[0][idx], rho[0][idx])
 
         # store the info at this time step
-        windows.append(window)
-        phis.append(phi[0])
-        kappas.append(kappa[0].T)
-        pis.append(pi[0])
         strokes.append([mu1[0][idx], mu2[0][idx], sigma1[0][idx], sigma2[0][idx], rho[0][idx], eos])
 
         # test if finished (has the read head seen the whole ascii sequence?)
@@ -85,14 +81,11 @@ def sample(input_text, model, args):
         prev_x[0][0] = np.array([x1, x2, eos], dtype=np.float32)
         i += 1
 
-    windows = np.vstack(windows)
-    phis = np.vstack(phis)
-    kappas = np.vstack(kappas)
     strokes = np.vstack(strokes)
 
     # the network predicts the displacements between pen points, so do a running sum over the time dimension
     strokes[:, :2] = np.cumsum(strokes[:, :2], axis=0)
-    return strokes, phis, windows, kappas
+    return strokes
 
 
 # plots parameters from the attention mechanism

@@ -1,10 +1,14 @@
+import pickle
+
 import tensorflow as tf
 import argparse
 import time
 import os
 
-from model3 import Model
-from sample import DataSource, Logger
+from typing import *
+from model import Model
+from sample import DataSource
+from logger import Logger
 
 
 def main():
@@ -67,24 +71,34 @@ def train_model(args):
     model = Model(logger=logger)
     logger.write("building model...")
     model.build(args)
-    model.save_weights(args.save_path + 'raw')
+    zero_weight = os.path.join(args.cache_dir, 'zero_weight')
+    model.save_weights(zero_weight)
+    all_weights: Dict[int, object] = dict()
     logger.write("training...")
     for writer, dataset in data_loader.datasets():
-        path = args.save_path + str(writer)
+        path = os.path.join(args.save_path, str(writer))
         if not os.path.exists(path):
-            logger.write("reloading model...")
-            model.load_weights(args.save_path + 'raw')
+            logger.write("training start on writer: {}".format(writer))
+            logger.write("\treloading weights...")
+            model.load_weights(zero_weight)
             train, validation = dataset
+            logger.write("\ttraining model...")
             model.train_network(
                 train=tf.data.Dataset.from_tensor_slices(train).batch(args.batch_size, drop_remainder=True),
                 validation=tf.data.Dataset.from_tensor_slices(validation).batch(args.batch_size, drop_remainder=True),
                 epochs=args.nepochs,
                 tensorboard_logs=args.board_path
             )
-            logger.write("saving model...")
+            logger.write("\tsaving model...")
             model.save_model(path)
         else:
             logger.write("already exists, skipping writer: {}".format(writer))
+        logger.write("collecting weights")
+        model.try_load_model(path, False)
+        weights = model.get_weights()
+        all_weights[writer] = weights
+    with open(os.path.join(args.save_path, "all_weights.cpkl"), 'wb') as f:
+        pickle.dump(all_weights, f, protocol=2)
 
 
 def sample_model(args, logger=None):

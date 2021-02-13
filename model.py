@@ -1,5 +1,5 @@
 import tensorflow as tf
-from utils import *
+from data import *
 
 
 # noinspection PyAttributeOutsideInit
@@ -217,11 +217,14 @@ class Model:
         self.model.save(filepath=save_path)
 
     # ----- for restoring previous models
-    def try_load_model(self, save_path):
+    def try_load_model(self, save_path, compile=True):
         try:
-            self.model = tf.keras.models.load_model(filepath=save_path)
+            self.model = tf.keras.models.load_model(filepath=save_path, compile=compile)
         except IOError:
             self.logger.write("no saved model to load. starting new session")
             return True
         else:
             return False
+
+    def get_weights(self):
+        return self.model.get_weights()
