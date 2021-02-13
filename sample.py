@@ -20,7 +20,7 @@ def get_style_states(model, args):
     style_onehot = [to_one_hot(style_string, model.ascii_steps, args.alphabet)]
 
     style_stroke = np.zeros((1, 1, 3), dtype=np.float32)
-    style_kappa = np.zeros((1, args.kmixtures, 1))
+    style_kappa = np.zeros((1, args.k_mixtures, 1))
     prime_len = 500  # must be <= 700
 
     for i in range(prime_len):
@@ -39,7 +39,7 @@ def sample(input_text, model, args):
     # initialize some parameters
     one_hot = [to_one_hot(input_text, model.ascii_steps, args.alphabet)]  # convert input string to one-hot vector
     [c0, c1, c2, h0, h1, h2] = get_style_states(model, args)  # get numpy zeros states for all three LSTMs
-    kappa = np.zeros((1, args.kmixtures, 1))  # attention mechanism's read head should start at index 0
+    kappa = np.zeros((1, args.k_mixtures, 1))  # attention mechanism's read head should start at index 0
     prev_x = np.asarray([[[0, 0, 1]]], dtype=np.float32)  # start with a pen stroke at (0,0)
 
     strokes, pis, windows, phis, kappas = [], [], [], [], []  # the data we're going to generate will go here

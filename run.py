@@ -1,14 +1,10 @@
-import pickle
-
 import tensorflow as tf
 import argparse
 import time
-import os
 
-from typing import *
-from model import Model
-from sample import DataSource
-from logger import Logger
+from model.train import Training
+from utils.logger import Logger
+from model.utils import set_path
 
 
 def main():
@@ -42,11 +38,10 @@ def main():
 
     # book-keeping
     parser.add_argument('--data_scale', type=int, default=50, help='amount to scale data down before training')
-    parser.add_argument('--log_dir', type=str, default='./logs/', help='location, relative to execution, of log files')
+    parser.add_argument('--log_dir', type=str, default='./logs', help='location, relative to execution, of log files')
     parser.add_argument('--data_dir', type=str, default='./data', help='location, relative to execution, of data')
     parser.add_argument('--cache_dir', type=str, default="./cache", help='location, relative to execution, of cache')
-    parser.add_argument('--save_path', type=str, default='saved/model.ckpt', help='location to save model')
-    parser.add_argument('--save_every', type=int, default=500, help='number of batches between each save')
+    parser.add_argument('--save_path', type=str, default='./saved', help='location to save model')
     parser.add_argument('--board_path', type=str, default="./tb_logs/", help='location, relative to execution, board')
 
     # sampling
@@ -58,47 +53,11 @@ def main():
     parser.add_argument('--sleep_time', type=int, default=60 * 5, help='time to sleep between running sampler')
     parser.set_defaults(train=True)
     args = parser.parse_args()
-
-    train_model(args) if args.train else sample_model(args)
-
-
-def train_model(args):
-    logger = Logger(args)  # make logging utility
-    logger.write("\nTRAINING MODE...")
-    logger.write("{}\n".format(args))
-    logger.write("loading data...")
-    data_loader = DataSource(args, logger=logger)
-    model = Model(logger=logger)
-    logger.write("building model...")
-    model.build(args)
-    zero_weight = os.path.join(args.cache_dir, 'zero_weight')
-    model.save_weights(zero_weight)
-    all_weights: Dict[int, object] = dict()
-    logger.write("training...")
-    for writer, dataset in data_loader.datasets():
-        path = os.path.join(args.save_path, str(writer))
-        if not os.path.exists(path):
-            logger.write("training start on writer: {}".format(writer))
-            logger.write("\treloading weights...")
-            model.load_weights(zero_weight)
-            train, validation = dataset
-            logger.write("\ttraining model...")
-            model.train_network(
-                train=tf.data.Dataset.from_tensor_slices(train).batch(args.batch_size, drop_remainder=True),
-                validation=tf.data.Dataset.from_tensor_slices(validation).batch(args.batch_size, drop_remainder=True),
-                epochs=args.nepochs,
-                tensorboard_logs=args.board_path
-            )
-            logger.write("\tsaving model...")
-            model.save_model(path)
-        else:
-            logger.write("already exists, skipping writer: {}".format(writer))
-        logger.write("collecting weights")
-        model.try_load_model(path, False)
-        weights = model.get_weights()
-        all_weights[writer] = weights
-    with open(os.path.join(args.save_path, "all_weights.cpkl"), 'wb') as f:
-        pickle.dump(all_weights, f, protocol=2)
+    set_path(base='', data=args.data_dir, cache=args.cache_dir, model_obj=args.save_path)
+    if args.train:
+        Training(args).train()
+        return
+    # train_model(args) if args.train else sample_model(args)
 
 
 def sample_model(args, logger=None):
@@ -108,7 +67,7 @@ def sample_model(args, logger=None):
     else:
         strings = [args.text]
 
-    logger = Logger(args) if logger is None else logger  # instantiate logger, if None
+    logger = Logger() if logger is None else logger  # instantiate logger, if None
     logger.write("\nSAMPLING MODE...")
     logger.write("loading data...")
 

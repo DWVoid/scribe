@@ -1,12 +1,10 @@
-import os
-
 from model import Model
 from sample import DataSource
-from logger import Logger
+from utils.logger import Logger
 
 
 def visual_weights(args):
-    logger = Logger(args)  # make logging utility
+    logger = Logger()  # make logging utility
     logger.write("\nWEIGHT INSPECTION MODE...")
     logger.write("{}\n".format(args))
     logger.write("loading data...")

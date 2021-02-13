@@ -1,98 +1,9 @@
 import tensorflow as tf
-from data import *
+import numpy as np
+from model.source import *
 
-
-# noinspection PyAttributeOutsideInit
-class GaussianAttention(tf.keras.layers.Layer):
-    def __init__(self, kmixtures, window_w_initializer, window_b_initializer):
-        super(GaussianAttention, self).__init__()
-        self.kmixtures = kmixtures
-        self.window_w_initializer = window_w_initializer
-        self.window_b_initializer = window_b_initializer
-
-    def build(self, input_shape):
-        batch = input_shape[0]
-        hidden = input_shape[2]
-        n_out = 3 * self.kmixtures
-        self.init_kappa = np.zeros((batch, self.kmixtures, 1))
-        self.window_w = self.add_weight("window_w", shape=[hidden, n_out], initializer=self.window_w_initializer)
-        self.window_b = self.add_weight("window_b", shape=[n_out], initializer=self.window_b_initializer)
-
-    def call(self, input0, **kwargs):
-        assoc = tf.unstack(kwargs['stroke'], axis=1)
-        result = tf.unstack(input0, axis=1)
-        prev_kappa = self.init_kappa.copy()
-        char_seq = kwargs['char']
-        for i in range(len(result)):
-            [alpha, beta, new_kappa] = self.get_window_params(result[i], prev_kappa)
-            window, phi = self.get_window(alpha, beta, new_kappa, char_seq)
-            result[i] = tf.concat((result[i], window, assoc[i]), 1)
-            prev_kappa = new_kappa
-        return tf.stack(result, axis=1)
-
-    # ----- build the gaussian character window
-    def get_window(self, alpha, beta, kappa, c):
-        # phi -> [? x 1 x ascii_steps] and is a tf matrix
-        # c -> [? x ascii_steps x alphabet] and is a tf matrix
-        ascii_steps = c.get_shape()[1]  # number of items in sequence
-        phi = self.get_phi(ascii_steps, alpha, beta, kappa)
-        window = tf.matmul(phi, c)
-        window = tf.squeeze(window, [1])  # window ~ [?,alphabet]
-        return window, phi
-
-    # get phi for all t,u (returns a [1 x tsteps] matrix) that defines the window
-    def get_phi(self, ascii_steps, alpha, beta, kappa):
-        # alpha, beta, kappa -> [?,kmixtures,1] and each is a tf variable
-        u = np.linspace(0, ascii_steps - 1, ascii_steps)  # weight all the U items in the sequence
-        kappa_term = tf.square(tf.subtract(kappa, u))
-        exp_term = tf.multiply(-beta, kappa_term)
-        phi_k = tf.multiply(alpha, tf.exp(exp_term))
-        return tf.reduce_sum(input_tensor=phi_k, axis=1, keepdims=True)  # phi ~ [?,1,ascii_steps]
-
-    def get_window_params(self, out_cell0, prev_kappa):
-        abk_hats = tf.add(tf.matmul(out_cell0, self.window_w), self.window_b)  # abk_hats ~ [?,n_out]
-        # abk_hats ~ [?,n_out] = "alpha, beta, kappa hats"
-        abk = tf.exp(tf.reshape(abk_hats, [-1, 3 * self.kmixtures, 1]))
-        alpha, beta, kappa = tf.split(abk, 3, 1)  # alpha_hat, etc ~ [?,kmixtures]
-        kappa = kappa + prev_kappa
-        return alpha, beta, kappa  # each ~ [?,kmixtures,1]
-
-
-# noinspection PyAttributeOutsideInit
-class MDN(tf.keras.layers.Layer):
-    def __init__(self, rnn_size, nmixtures, initializer):
-        super(MDN, self).__init__()
-        self.rnn_size = rnn_size
-        self.nmixtures = nmixtures
-        self.initializer = initializer
-
-    def build(self, input_shape):
-        n_out = 1 + self.nmixtures * 6  # params = end_of_stroke + 6 parameters per Gaussian
-        self.mdn_w = self.add_weight("output_w", shape=[self.rnn_size, n_out], initializer=self.initializer)
-        self.mdn_b = self.add_weight("output_b", shape=[n_out], initializer=self.initializer)
-
-    def call(self, input0, **kwargs):
-        flattened = tf.reshape(tf.concat(input0, 0), [-1, self.rnn_size])  # concat outputs for efficiency
-        dense = tf.add(tf.matmul(flattened, self.mdn_w), self.mdn_b)
-        return tf.stack(dense)
-
-
-class StateReset(tf.keras.callbacks.Callback):
-    vars: (tf.Variable, object)
-
-    def __init__(self, op_vars: (tf.Variable, object)):
-        super(StateReset, self).__init__()
-        self.vars = op_vars
-
-    def on_epoch_begin(self, epoch, logs=None):
-        self.execute()
-
-    def on_epoch_end(self, epoch, logs=None):
-        self.execute()
-
-    def execute(self):
-        for (var, val) in self.vars:
-            var.assign(val)
+from model.gaussian_attention import GaussianAttention
+from model.mdn import MDN
 
 
 # transform dense NN outputs into params for MDN
@@ -182,7 +93,6 @@ class Model:
         )
         model_out = mdn(cell2(cell1(attention(cell0(model_stroke), stroke=model_stroke, char=model_char))))
         self.model = tf.keras.Model([model_stroke, model_char], model_out)
-        self.model.summary()
         # self.cost = loss / (self.batch_size * self.tsteps)
 
         # define the training parameters and prepare for training
@@ -195,6 +105,11 @@ class Model:
         else:
             raise ValueError("Optimizer type not recognized")
         self.model.compile(optimizer=s_optimizer, loss=tf2_loss)
+
+    def duplicate(self):
+        model = Model(Logger(self.logger))
+        model.model = tf.keras.models.clone_model(self.model)
+        return model
 
     def train_network(self, train, validation, epochs, tensorboard_logs):
         tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=tensorboard_logs, histogram_freq=1)
@@ -228,3 +143,6 @@ class Model:
 
     def get_weights(self):
         return self.model.get_weights()
+
+    def set_weights(self, weights):
+        self.model.set_weights(weights)
