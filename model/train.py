@@ -17,18 +17,20 @@ class Training:
         self.logger.write("loading data...")
         self.data = DataSource(args, logger=Logger(self.logger))
         self.all_weights_old = du.load_model_obj('all_weights', dict())
-        self.model, self.weights = self.gen_model_object()
+        self.model, self.zero_weights = self.gen_model_object()
         # transfer some model settings
         self.batch_size = args.batch_size
         self.n_epochs = args.nepochs
         self.board_path = args.board_path
+        if not os.path.exists(du.model_obj_path('weights')):
+            os.mkdir(du.model_obj_path('weights'))
 
     def train(self) -> None:
         all_weights = dict()
         self.logger.write('training')
-        for writer, weighs in map(self.apply_train_one, self.data.datasets()):
+        for writer, weights in map(self.apply_train_one, self.data.datasets()):
             self.logger.write('collecting writer {}'.format(writer))
-            all_weights[writer] = weighs
+            all_weights[writer] = weights
         self.all_weights_old = all_weights
         du.save_model_obj('all_weights', self.all_weights_old)
 
@@ -39,7 +41,7 @@ class Training:
         return model, model.get_weights()
 
     def apply_train_one(self, o) -> Any:
-        writer, dataset = o
+        (writer, dataset) = o
         return writer, self.train_one(writer, dataset)
 
     def train_one(self, writer: int, dataset: DataSetCompiled) -> Any:
@@ -56,7 +58,7 @@ class Training:
         else:
             logger.write("training start on writer: {}".format(writer))
             logger.write("resetting weights...")
-            self.model.set_weights(weights)
+            self.model.set_weights(self.zero_weights)
             train, validation = dataset
             logger.write("training model...")
             self.model.train_network(
