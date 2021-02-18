@@ -57,8 +57,8 @@ class Model:
 
     def build(self, args):
         # model params
-        self.batch_size = args.batch_size if args.train else 1  # training/sampling specific
-        self.tsteps = args.tsteps if args.train else 1  # training/sampling specific
+        self.batch_size = args.batch_size
+        self.tsteps = args.tsteps
         # training params
         self.grad_clip = args.grad_clip
         # misc
@@ -146,3 +146,6 @@ class Model:
 
     def set_weights(self, weights):
         self.model.set_weights(weights)
+
+    def get(self):
+        return self.model

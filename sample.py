@@ -1,4 +1,87 @@
 from data import *
+import tensorflow as tf
+import numpy as np
+import argparse
+import time
+
+from utils.logger import Logger
+from model.utils import set_path
+
+
+def main():
+    parser = argparse.ArgumentParser()
+
+    # general model params
+    parser.add_argument('--rnn_size', type=int, default=100, help='size of RNN hidden state')
+    parser.add_argument('--tsteps', type=int, default=150, help='RNN time steps (for backprop)')
+    parser.add_argument('--nmixtures', type=int, default=8, help='number of gaussian mixtures')
+
+    # window params
+    parser.add_argument('--kmixtures', type=int, default=1, help='number of gaussian mixtures for character window')
+    parser.add_argument('--alphabet', type=str, default=' abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+                        help='default is a-z, A-Z, space, and <UNK> tag')
+    parser.add_argument('--tsteps_per_ascii', type=int, default=25, help='expected number of pen points per character')
+
+    # book-keeping
+    parser.add_argument('--log_dir', type=str, default='./logs', help='location, relative to execution, of log files')
+    parser.add_argument('--data_dir', type=str, default='./data', help='location, relative to execution, of data')
+    parser.add_argument('--cache_dir', type=str, default="./cache", help='location, relative to execution, of cache')
+    parser.add_argument('--save_path', type=str, default='./saved', help='location to save model')
+    parser.add_argument('--board_path', type=str, default="./tb_logs/", help='location, relative to execution, board')
+
+    # sampling
+    parser.add_argument('--text', type=str, default='', help='string for sampling model (defaults to test cases)')
+    parser.add_argument('--style', type=int, default=-1,
+                        help='optionally condition model on a preset style (using data in styles.p)')
+    parser.add_argument('--bias', type=float, default=1.0,
+                        help='higher bias means neater, lower means more diverse (range is 0-5)')
+    parser.add_argument('--sleep_time', type=int, default=60 * 5, help='time to sleep between running sampler')
+    parser.set_defaults(train=True)
+    args = parser.parse_args()
+    set_path(base='', data=args.data_dir, cache=args.cache_dir, model_obj=args.save_path)
+    sample_model(args)
+
+
+def sample_model(args, logger=None):
+    if args.text == '':
+        strings = ['call me ishmael some years ago', 'A project by Sam Greydanus', 'mmm mmm mmm mmm mmm mmm mmm',
+                   'What I cannot create I do not understand', 'You know nothing Jon Snow']  # test strings
+    else:
+        strings = [args.text]
+
+    logger = Logger() if logger is None else logger  # instantiate logger, if None
+    logger.write("\nSAMPLING MODE...")
+    logger.write("loading data...")
+
+    logger.write("building model...")
+    model = Model(logger)
+
+    logger.write("attempt to load saved model...")
+    load_was_success, global_step = model.try_load_model(args.save_path)
+
+    if load_was_success:
+        for s in strings:
+            strokes, phis, windows, kappas = sample(s, model, args)
+
+            g_save_path = '{}figures/iter-{}-g-{}'.format(args.log_dir, global_step, s[:10].replace(' ', '_'))
+            l_save_path = '{}figures/iter-{}-l-{}'.format(args.log_dir, global_step, s[:10].replace(' ', '_'))
+
+            gauss_plot(strokes, 'Heatmap for "{}"'.format(s), figsize=(2 * len(s), 4), save_path=g_save_path)
+            line_plot(strokes, 'Line plot for "{}"'.format(s), figsize=(len(s), 2), save_path=l_save_path)
+
+            # make sure that kappas are reasonable
+            logger.write("kappas: \n{}".format(str(kappas[min(kappas.shape[0] - 1, args.tsteps_per_ascii), :])))
+    else:
+        logger.write("load failed, sampling canceled")
+
+    if True:
+        tf.compat.v1.reset_default_graph()
+        time.sleep(args.sleep_time)
+        sample_model(args, logger=logger)
+
+
+if __name__ == '__main__':
+    main()
 
 
 def sample_gaussian2d(mu1, mu2, s1, s2, rho):
@@ -9,8 +92,6 @@ def sample_gaussian2d(mu1, mu2, s1, s2, rho):
 
 
 def get_style_states(model, args):
-    c0, c1, c2 = model.istate_cell0.c.eval(), model.istate_cell1.c.eval(), model.istate_cell2.c.eval()
-    h0, h1, h2 = model.istate_cell0.h.eval(), model.istate_cell1.h.eval(), model.istate_cell2.h.eval()
     if args.style is -1: return [c0, c1, c2, h0, h1, h2]  # model 'chooses' random style
 
     with open(os.path.join(args.data_dir, 'styles.p'), 'r') as f:
@@ -25,7 +106,7 @@ def get_style_states(model, args):
 
     for i in range(prime_len):
         style_stroke[0][0] = style_strokes[i, :]
-        feed = {model.input_data: style_stroke, model.char_seq: style_onehot, model.init_kappa: style_kappa,
+        feed = {model.input_data: style_stroke, model.char_seq: style_onehot, model.kappa: style_kappa,
                 model.istate_cell0.c: c0, model.istate_cell1.c: c1, model.istate_cell2.c: c2,
                 model.istate_cell0.h: h0, model.istate_cell1.h: h1, model.istate_cell2.h: h2}
         fetch = [model.new_kappa,
@@ -47,7 +128,7 @@ def sample(input_text, model, args):
     finished = False
     i = 0
     while not finished:
-        feed = {model.input_data: prev_x, model.char_seq: one_hot, model.init_kappa: kappa,
+        feed = {model.input_data: prev_x, model.char_seq: one_hot, model.kappa: kappa,
                 model.istate_cell0.c: c0, model.istate_cell1.c: c1, model.istate_cell2.c: c2,
                 model.istate_cell0.h: h0, model.istate_cell1.h: h1, model.istate_cell2.h: h2}
         fetch = [model.pi_hat, model.mu1, model.mu2, model.sigma1_hat, model.sigma2_hat, model.rho, model.eos,
@@ -88,32 +169,9 @@ def sample(input_text, model, args):
     return strokes
 
 
-# plots parameters from the attention mechanism
-def window_plots(phis, windows, save_path='.'):
-    import matplotlib.cm as cm
-    import matplotlib as mpl
-    mpl.use('Agg')
-    import matplotlib.pyplot as plt
-    plt.figure(figsize=(16, 4))
-    plt.subplot(121)
-    plt.title('Phis', fontsize=20)
-    plt.xlabel("ascii #", fontsize=15)
-    plt.ylabel("time steps", fontsize=15)
-    plt.imshow(phis, interpolation='nearest', aspect='auto', cmap=cm.jet)
-    plt.subplot(122)
-    plt.title('Soft attention window', fontsize=20)
-    plt.xlabel("one-hot vector", fontsize=15)
-    plt.ylabel("time steps", fontsize=15)
-    plt.imshow(windows, interpolation='nearest', aspect='auto', cmap=cm.jet)
-    plt.savefig(save_path)
-    plt.clf()
-    plt.cla()
-
-
 # a heatmap for the probabilities of each pen point in the sequence
 def gauss_plot(strokes, title, figsize=(20, 2), save_path='.'):
     import matplotlib.mlab as mlab
-    import matplotlib.cm as cm
     import matplotlib as mpl
     mpl.use('Agg')
     import matplotlib.pyplot as plt

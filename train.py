@@ -1,9 +1,6 @@
-import tensorflow as tf
 import argparse
-import time
 
 from model.train import Training
-from utils.logger import Logger
 from model.utils import set_path
 
 
@@ -11,8 +8,6 @@ def main():
     parser = argparse.ArgumentParser()
 
     # general model params
-    parser.add_argument('--train', dest='train', action='store_true', help='train the model')
-    parser.add_argument('--sample', dest='train', action='store_false', help='sample from the model')
     parser.add_argument('--rnn_size', type=int, default=100, help='size of RNN hidden state')
     parser.add_argument('--tsteps', type=int, default=150, help='RNN time steps (for backprop)')
     parser.add_argument('--nmixtures', type=int, default=8, help='number of gaussian mixtures')
@@ -44,60 +39,9 @@ def main():
     parser.add_argument('--save_path', type=str, default='./saved', help='location to save model')
     parser.add_argument('--board_path', type=str, default="./tb_logs/", help='location, relative to execution, board')
 
-    # sampling
-    parser.add_argument('--text', type=str, default='', help='string for sampling model (defaults to test cases)')
-    parser.add_argument('--style', type=int, default=-1,
-                        help='optionally condition model on a preset style (using data in styles.p)')
-    parser.add_argument('--bias', type=float, default=1.0,
-                        help='higher bias means neater, lower means more diverse (range is 0-5)')
-    parser.add_argument('--sleep_time', type=int, default=60 * 5, help='time to sleep between running sampler')
-    parser.set_defaults(train=True)
     args = parser.parse_args()
     set_path(base='', data=args.data_dir, cache=args.cache_dir, model_obj=args.save_path)
-    if args.train:
-        Training(args).train()
-        return
-    # train_model(args) if args.train else sample_model(args)
-
-
-def sample_model(args, logger=None):
-    if args.text == '':
-        strings = ['call me ishmael some years ago', 'A project by Sam Greydanus', 'mmm mmm mmm mmm mmm mmm mmm',
-                   'What I cannot create I do not understand', 'You know nothing Jon Snow']  # test strings
-    else:
-        strings = [args.text]
-
-    logger = Logger() if logger is None else logger  # instantiate logger, if None
-    logger.write("\nSAMPLING MODE...")
-    logger.write("loading data...")
-
-    logger.write("building model...")
-    model = Model(logger)
-
-    logger.write("attempt to load saved model...")
-    load_was_success, global_step = model.try_load_model(args.save_path)
-
-    if load_was_success:
-        for s in strings:
-            strokes, phis, windows, kappas = sample(s, model, args)
-
-            w_save_path = '{}figures/iter-{}-w-{}'.format(args.log_dir, global_step, s[:10].replace(' ', '_'))
-            g_save_path = '{}figures/iter-{}-g-{}'.format(args.log_dir, global_step, s[:10].replace(' ', '_'))
-            l_save_path = '{}figures/iter-{}-l-{}'.format(args.log_dir, global_step, s[:10].replace(' ', '_'))
-
-            window_plots(phis, windows, save_path=w_save_path)
-            gauss_plot(strokes, 'Heatmap for "{}"'.format(s), figsize=(2 * len(s), 4), save_path=g_save_path)
-            line_plot(strokes, 'Line plot for "{}"'.format(s), figsize=(len(s), 2), save_path=l_save_path)
-
-            # make sure that kappas are reasonable
-            logger.write("kappas: \n{}".format(str(kappas[min(kappas.shape[0] - 1, args.tsteps_per_ascii), :])))
-    else:
-        logger.write("load failed, sampling canceled")
-
-    if True:
-        tf.compat.v1.reset_default_graph()
-        time.sleep(args.sleep_time)
-        sample_model(args, logger=logger)
+    Training(args).train()
 
 
 if __name__ == '__main__':

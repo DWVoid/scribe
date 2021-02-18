@@ -2,8 +2,8 @@ import os
 import tensorflow as tf
 import model.utils as du
 from model.types import *
-from model.source import DataSource
 from model.model import Model
+from model.source import DataSource
 from utils.logger import Logger, LoggerRoot
 
 
@@ -14,60 +14,72 @@ class Training:
         self.args = args
         self.logger = LoggerRoot(args.log_dir)
         self.logger.write('{}'.format(args))
-        self.logger.write("loading data...")
-        self.data = DataSource(args, logger=Logger(self.logger))
-        self.all_weights_old = du.load_model_obj('all_weights', dict())
-        self.model, self.zero_weights = self.gen_model_object()
-        # transfer some model settings
-        self.batch_size = args.batch_size
-        self.n_epochs = args.nepochs
-        self.board_path = args.board_path
+        # check if the result exists. if is, print a hint and exit immediately
+        if du.load_model_obj('all_weights', None) is not None:
+            self.logger.write("training has completed. delete everything under saved directory if you want re-train")
+            self.data = None
+        else:
+            # transfer some model settings
+            self.batch_size = args.batch_size
+            self.n_epochs = args.nepochs
+            self.board_path = args.board_path
+            # prepare data and training
+            self.logger.write("loading data...")
+            self.data = DataSource(args, logger=Logger(self.logger)).datasets()
+            self.logger.write("counting progress...")
+            self.all_weights = self.__init_count_progress()
+            self.__init_trim_datasets()
+            self.logger.write("compiling model...")
+            self.model, self.zero_weights = self.__init_model_object()
+
+    def __init_count_progress(self) -> Dict[int, List[np.ndarray]]:
+        all_weights: Dict[int, List[np.ndarray]] = dict()
         if not os.path.exists(du.model_obj_path('weights')):
             os.mkdir(du.model_obj_path('weights'))
+        else:
+            for writer in self.data.keys():
+                weights = du.load_model_obj(os.path.join('weights', str(writer)), None)
+                if weights is not None:
+                    all_weights[writer] = weights
+        return all_weights
 
-    def train(self) -> None:
-        all_weights = dict()
-        self.logger.write('training')
-        for writer, weights in map(self.apply_train_one, self.data.datasets()):
-            self.logger.write('collecting writer {}'.format(writer))
-            all_weights[writer] = weights
-        self.all_weights_old = all_weights
-        du.save_model_obj('all_weights', self.all_weights_old)
+    def __init_trim_datasets(self) -> None:
+        if bool(self.all_weights):
+            self.logger.write('some writers are already trained, involving')
+            self.logger.write('{}'.format(self.all_weights.keys()))
+            self.logger.write('trimming training datasets...')
+            for writer in self.all_weights.keys():
+                self.data.pop(writer)
 
-    def gen_model_object(self):
-        self.logger.write("building model...")
+    def __init_model_object(self):
         model = Model(logger=Logger(self.logger))
         model.build(self.args)
         return model, model.get_weights()
 
-    def apply_train_one(self, o) -> Any:
-        (writer, dataset) = o
-        return writer, self.train_one(writer, dataset)
+    def train(self) -> None:
+        if self.data is not None:
+            self.logger.write('training...')
+            for writer, weights in map(self.__apply_train_one, self.data.items()):
+                self.all_weights[writer] = weights
+            du.save_model_obj('all_weights', self.all_weights)
+            self.logger.write('training completed')
 
-    def train_one(self, writer: int, dataset: DataSetCompiled) -> Any:
+    def __apply_train_one(self, o: Tuple[int, DataSetCompiled]) -> Tuple[int, List[np.ndarray]]:
+        (writer, (train, validation)) = o
+        return writer, self.__train_one(writer, train, validation)
+
+    def __train_one(self, writer: int, train: DataSetShaped, validation: DataSetShaped) -> List[np.ndarray]:
         logger = Logger(self.logger)
-        # skip if the weight is in the map
-        if writer in self.all_weights_old:
-            logger.write('data of writer {} has been trained'.format(writer))
-            return self.all_weights_old[writer]
-        weights_path = os.path.join('weights', str(writer))
-        weights = du.load_model_obj(weights_path)
-        if weights is not None:
-            logger.write('data of writer {} has been trained, transferring to map'.format(writer))
-            return weights
-        else:
-            logger.write("training start on writer: {}".format(writer))
-            logger.write("resetting weights...")
-            self.model.set_weights(self.zero_weights)
-            train, validation = dataset
-            logger.write("training model...")
-            self.model.train_network(
-                train=tf.data.Dataset.from_tensor_slices(train).batch(self.batch_size, drop_remainder=True),
-                validation=tf.data.Dataset.from_tensor_slices(validation).batch(self.batch_size, drop_remainder=True),
-                epochs=self.n_epochs,
-                tensorboard_logs=self.board_path
-            )
-            logger.write("saving model...")
-            weights = self.model.get_weights()
-            du.save_model_obj(weights_path, weights)
-            return weights
+        logger.write("on writer: {}, resetting weights...".format(writer))
+        self.model.set_weights(self.zero_weights)
+        logger.write("training model...")
+        self.model.train_network(
+            train=tf.data.Dataset.from_tensor_slices(train).batch(self.batch_size, drop_remainder=True),
+            validation=tf.data.Dataset.from_tensor_slices(validation).batch(self.batch_size, drop_remainder=True),
+            epochs=self.n_epochs,
+            tensorboard_logs=self.board_path
+        )
+        logger.write("saving weights...")
+        weights = self.model.get_weights()
+        du.save_model_obj(os.path.join('weights', str(writer)), weights)
+        return weights

@@ -5,7 +5,8 @@ import tensorflow as tf
 class GaussianAttention(tf.keras.layers.Layer):
     window_w: tf.Variable
     window_b: tf.Variable
-    init_kappa: np.ndarray
+    kappa: np.ndarray
+    next_kappa: np.ndarray
 
     def __init__(self, k_mixtures, window_w_initializer, window_b_initializer, **kwargs):
         super(GaussianAttention, self).__init__(**kwargs)
@@ -17,7 +18,7 @@ class GaussianAttention(tf.keras.layers.Layer):
         batch = input_shape[0]
         hidden = input_shape[2]
         n_out = 3 * self.k_mixtures
-        self.init_kappa = np.zeros((batch, self.k_mixtures, 1))
+        self.kappa = np.zeros((batch, self.k_mixtures, 1))
         self.window_w = self.add_weight("window_w", shape=[hidden, n_out], initializer=self.window_w_initializer)
         self.window_b = self.add_weight("window_b", shape=[n_out], initializer=self.window_b_initializer)
 
@@ -33,13 +34,14 @@ class GaussianAttention(tf.keras.layers.Layer):
     def call(self, input0, **kwargs):
         assoc = tf.unstack(kwargs['stroke'], axis=1)
         result = tf.unstack(input0, axis=1)
-        prev_kappa = self.init_kappa.copy()
+        prev_kappa = self.kappa.copy()
         char_seq = kwargs['char']
         for i in range(len(result)):
             [alpha, beta, new_kappa] = self.get_window_params(result[i], prev_kappa)
             window, phi = self.get_window(alpha, beta, new_kappa, char_seq)
             result[i] = tf.concat((result[i], window, assoc[i]), 1)
             prev_kappa = new_kappa
+        self.next_kappa = prev_kappa
         return tf.stack(result, axis=1)
 
     # ----- build the gaussian character window
@@ -53,7 +55,8 @@ class GaussianAttention(tf.keras.layers.Layer):
         return window, phi
 
     # get phi for all t,u (returns a [1 x tsteps] matrix) that defines the window
-    def get_phi(self, ascii_steps, alpha, beta, kappa):
+    @staticmethod
+    def get_phi(ascii_steps, alpha, beta, kappa):
         # alpha, beta, kappa -> [?,kmixtures,1] and each is a tf variable
         u = np.linspace(0, ascii_steps - 1, ascii_steps)  # weight all the U items in the sequence
         kappa_term = tf.square(tf.subtract(kappa, u))

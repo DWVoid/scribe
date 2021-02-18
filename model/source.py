@@ -25,7 +25,7 @@ class DataSource:
             return
 
     def datasets(self):
-        return self.compiled.items()
+        return self.compiled
 
     def __try_load_compiled(self, meta: DataSetMeta) -> bool:
         meta_cached: DataSetMeta = du.load_cache('compiled.meta')
