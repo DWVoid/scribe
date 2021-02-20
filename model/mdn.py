@@ -26,6 +26,11 @@ class MDN(tf.keras.layers.Layer):
         self.mdn_b = self.add_weight("output_b", shape=[n_out], initializer=self.initializer)
 
     def call(self, input0, **kwargs):
+        print(input0)
+        print(self.mdn_w)
+        print(self.mdn_b)
         flattened = tf.reshape(tf.concat(input0, 0), [-1, self.rnn_size])  # concat outputs for efficiency
+        print(flattened)
         dense = tf.add(tf.matmul(flattened, self.mdn_w), self.mdn_b)
+        print(dense)
         return tf.stack(dense)

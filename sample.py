@@ -1,10 +1,14 @@
 from data import *
 import tensorflow as tf
+import model.utils as du
 import numpy as np
 import argparse
+import pickle
 import time
+import os
 
-from utils.logger import Logger
+from model.model import get_mdn_coef, Model
+from utils.logger import Logger, LoggerRoot
 from model.utils import set_path
 
 
@@ -13,7 +17,8 @@ def main():
 
     # general model params
     parser.add_argument('--rnn_size', type=int, default=100, help='size of RNN hidden state')
-    parser.add_argument('--tsteps', type=int, default=150, help='RNN time steps (for backprop)')
+    parser.add_argument('--batch_size', type=int, default=1, help='batch size for each gradient step')
+    parser.add_argument('--tsteps', type=int, default=1000, help='RNN time steps (for backprop)')
     parser.add_argument('--nmixtures', type=int, default=8, help='number of gaussian mixtures')
 
     # window params
@@ -36,52 +41,44 @@ def main():
     parser.add_argument('--bias', type=float, default=1.0,
                         help='higher bias means neater, lower means more diverse (range is 0-5)')
     parser.add_argument('--sleep_time', type=int, default=60 * 5, help='time to sleep between running sampler')
+    parser.add_argument('--writer', type=int, default=10000, help='writer id to load')
     parser.set_defaults(train=True)
     args = parser.parse_args()
     set_path(base='', data=args.data_dir, cache=args.cache_dir, model_obj=args.save_path)
     sample_model(args)
 
 
-def sample_model(args, logger=None):
+def sample_model(args):
     if args.text == '':
         strings = ['call me ishmael some years ago', 'A project by Sam Greydanus', 'mmm mmm mmm mmm mmm mmm mmm',
                    'What I cannot create I do not understand', 'You know nothing Jon Snow']  # test strings
     else:
         strings = [args.text]
 
-    logger = Logger() if logger is None else logger  # instantiate logger, if None
+    logger = LoggerRoot(args.log_dir)
     logger.write("\nSAMPLING MODE...")
     logger.write("loading data...")
 
     logger.write("building model...")
     model = Model(logger)
+    model.build(args, train=False)
 
     logger.write("attempt to load saved model...")
-    load_was_success, global_step = model.try_load_model(args.save_path)
+    model.set_weights(du.load_model_obj(os.path.join('weights', str(args.writer))))
 
-    if load_was_success:
-        for s in strings:
-            strokes, phis, windows, kappas = sample(s, model, args)
+    for s in strings:
+        strokes = sample(s, model, args)
 
-            g_save_path = '{}figures/iter-{}-g-{}'.format(args.log_dir, global_step, s[:10].replace(' ', '_'))
-            l_save_path = '{}figures/iter-{}-l-{}'.format(args.log_dir, global_step, s[:10].replace(' ', '_'))
+        g_save_path = '{}figures/iter-{}-g-{}'.format(args.log_dir, 1, s[:10].replace(' ', '_'))
+        l_save_path = '{}figures/iter-{}-l-{}'.format(args.log_dir, 1, s[:10].replace(' ', '_'))
 
-            gauss_plot(strokes, 'Heatmap for "{}"'.format(s), figsize=(2 * len(s), 4), save_path=g_save_path)
-            line_plot(strokes, 'Line plot for "{}"'.format(s), figsize=(len(s), 2), save_path=l_save_path)
-
-            # make sure that kappas are reasonable
-            logger.write("kappas: \n{}".format(str(kappas[min(kappas.shape[0] - 1, args.tsteps_per_ascii), :])))
-    else:
-        logger.write("load failed, sampling canceled")
+        gauss_plot(strokes, 'Heatmap for "{}"'.format(s), figsize=(2 * len(s), 4), save_path=g_save_path)
+        line_plot(strokes, 'Line plot for "{}"'.format(s), figsize=(len(s), 2), save_path=l_save_path)
 
     if True:
         tf.compat.v1.reset_default_graph()
         time.sleep(args.sleep_time)
-        sample_model(args, logger=logger)
-
-
-if __name__ == '__main__':
-    main()
+        sample_model(args)
 
 
 def sample_gaussian2d(mu1, mu2, s1, s2, rho):
@@ -92,7 +89,8 @@ def sample_gaussian2d(mu1, mu2, s1, s2, rho):
 
 
 def get_style_states(model, args):
-    if args.style is -1: return [c0, c1, c2, h0, h1, h2]  # model 'chooses' random style
+    if args.style == -1:
+        return  # model 'chooses' random style
 
     with open(os.path.join(args.data_dir, 'styles.p'), 'r') as f:
         style_strokes, style_strings = pickle.load(f)
@@ -106,37 +104,29 @@ def get_style_states(model, args):
 
     for i in range(prime_len):
         style_stroke[0][0] = style_strokes[i, :]
-        feed = {model.input_data: style_stroke, model.char_seq: style_onehot, model.kappa: style_kappa,
-                model.istate_cell0.c: c0, model.istate_cell1.c: c1, model.istate_cell2.c: c2,
-                model.istate_cell0.h: h0, model.istate_cell1.h: h1, model.istate_cell2.h: h2}
-        fetch = [model.new_kappa,
-                 model.fstate_cell0.c, model.fstate_cell1.c, model.fstate_cell2.c,
-                 model.fstate_cell0.h, model.fstate_cell1.h, model.fstate_cell2.h]
-        [style_kappa, c0, c1, c2, h0, h1, h2] = model.sess.run(fetch, feed)
-    return [c0, c1, c2, np.zeros_like(h0), np.zeros_like(h1), np.zeros_like(h2)]  # only the c vectors should be primed
+        model.get_attention().kappa = style_kappa
+        model.get()(style_stroke, style_onehot)
+        style_kappa = model.get_attention().next_kappa
+    # TODO: only the c vectors should be primed
 
 
 def sample(input_text, model, args):
     # initialize some parameters
     one_hot = [to_one_hot(input_text, model.ascii_steps, args.alphabet)]  # convert input string to one-hot vector
-    [c0, c1, c2, h0, h1, h2] = get_style_states(model, args)  # get numpy zeros states for all three LSTMs
-    kappa = np.zeros((1, args.k_mixtures, 1))  # attention mechanism's read head should start at index 0
+    get_style_states(model, args)  # get numpy zeros states for all three LSTMs
+    kappa = np.zeros((1, args.kmixtures, 1))  # attention mechanism's read head should start at index 0
     prev_x = np.asarray([[[0, 0, 1]]], dtype=np.float32)  # start with a pen stroke at (0,0)
 
-    strokes, pis, windows, phis, kappas = [], [], [], [], []  # the data we're going to generate will go here
+    # the data we're going to generate will go here
+    strokes = []
 
     finished = False
     i = 0
     while not finished:
-        feed = {model.input_data: prev_x, model.char_seq: one_hot, model.kappa: kappa,
-                model.istate_cell0.c: c0, model.istate_cell1.c: c1, model.istate_cell2.c: c2,
-                model.istate_cell0.h: h0, model.istate_cell1.h: h1, model.istate_cell2.h: h2}
-        fetch = [model.pi_hat, model.mu1, model.mu2, model.sigma1_hat, model.sigma2_hat, model.rho, model.eos,
-                 model.window, model.phi, model.new_kappa, model.alpha,
-                 model.fstate_cell0.c, model.fstate_cell1.c, model.fstate_cell2.c,
-                 model.fstate_cell0.h, model.fstate_cell1.h, model.fstate_cell2.h]
-        [pi_hat, mu1, mu2, sigma1_hat, sigma2_hat, rho, eos, _, _, kappa, _,
-         c0, c1, c2, h0, h1, h2] = model.sess.run(fetch, feed)
+        model.get_attention().kappa = kappa
+        dense = model.get()(prev_x, one_hot)
+        kappa = model.get_attention().next_kappa
+        [_, pi_hat, _, _, sigma1_hat, sigma2_hat, eos, mu1, mu2, rho] = get_mdn_coef(dense)
 
         # bias stuff:
         sigma1 = np.exp(sigma1_hat - args.bias)
@@ -216,3 +206,20 @@ def line_plot(strokes, title, figsize=(20, 2), save_path='.'):
     plt.savefig(save_path)
     plt.clf()
     plt.cla()
+
+
+# index position 0 means "unknown"
+def to_one_hot(s: str, ascii_steps: int, alphabet: str) -> np.ndarray:
+    s = s[:3e3] if len(s) > 3e3 else s  # clip super-long strings
+    seq = [alphabet.find(char) + 1 for char in s]
+    if len(seq) >= ascii_steps:
+        seq = seq[:ascii_steps]
+    else:
+        seq = seq + [0] * (ascii_steps - len(seq))
+    one_hot = np.zeros((ascii_steps, len(alphabet) + 1), dtype=np.float32)
+    one_hot[np.arange(ascii_steps), seq] = 1
+    return one_hot
+
+
+if __name__ == '__main__':
+    main()

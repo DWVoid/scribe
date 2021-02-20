@@ -52,36 +52,39 @@ def tf2_loss(y_true, y_pred):
 
 # noinspection PyAttributeOutsideInit
 class Model:
+    attention: GaussianAttention = None
+
     def __init__(self, logger):
         self.logger = logger
 
-    def build(self, args):
+    def build(self, args, train=True):
         # model params
-        self.batch_size = args.batch_size
-        self.tsteps = args.tsteps
-        # training params
-        self.grad_clip = args.grad_clip
+        self.batch_size = args.batch_size if train else 1
+        self.tsteps = args.tsteps if train else 1
         # misc
         self.tsteps_per_ascii = args.tsteps_per_ascii
 
         self.logger.write('\tusing alphabet{}'.format(args.alphabet))
         char_vec_len = len(args.alphabet) + 1  # plus one for <UNK> token
-        ascii_steps = int(args.tsteps / args.tsteps_per_ascii)
+        self.ascii_steps = int(args.tsteps / args.tsteps_per_ascii)
 
         graves_initializer = tf.keras.initializers.TruncatedNormal(mean=0.0, stddev=0.075)
         window_b_initializer = tf.keras.initializers.TruncatedNormal(mean=-3.0, stddev=0.25)
 
         # define the network layers
         cell0 = tf.keras.layers.LSTM(
-            args.rnn_size, return_sequences=True, kernel_initializer=graves_initializer, dropout=args.dropout
+            args.rnn_size, return_sequences=True, kernel_initializer=graves_initializer,
+            dropout=args.dropout if train else 0.
         )
         cell1 = tf.keras.layers.LSTM(
-            args.rnn_size, return_sequences=True, kernel_initializer=graves_initializer, dropout=args.dropout
+            args.rnn_size, return_sequences=True, kernel_initializer=graves_initializer,
+            dropout=args.dropout if train else 0.
         )
         cell2 = tf.keras.layers.LSTM(
-            args.rnn_size, return_sequences=True, kernel_initializer=graves_initializer, dropout=args.dropout
+            args.rnn_size, return_sequences=True, kernel_initializer=graves_initializer,
+            dropout=args.dropout if train else 0.
         )
-        attention = GaussianAttention(args.kmixtures, graves_initializer, window_b_initializer)
+        self.attention = GaussianAttention(args.kmixtures, graves_initializer, window_b_initializer)
         mdn = MDN(args.rnn_size, args.nmixtures, graves_initializer)
 
         # link the network
@@ -89,22 +92,25 @@ class Model:
             name='stroke', shape=(self.tsteps, 3,), batch_size=self.batch_size
         )
         model_char = tf.keras.layers.Input(
-            name='char', shape=(ascii_steps, char_vec_len,), batch_size=self.batch_size
+            name='char', shape=(self.ascii_steps, char_vec_len,), batch_size=self.batch_size
         )
-        model_out = mdn(cell2(cell1(attention(cell0(model_stroke), stroke=model_stroke, char=model_char))))
+        model_out = mdn(cell2(cell1(self.attention(cell0(model_stroke), stroke=model_stroke, char=model_char))))
         self.model = tf.keras.Model([model_stroke, model_char], model_out)
         # self.cost = loss / (self.batch_size * self.tsteps)
 
-        # define the training parameters and prepare for training
-        size = args.nbatches * args.batch_size
-        rate = tf.keras.optimizers.schedules.ExponentialDecay(args.learning_rate, size, args.lr_decay)
-        if args.optimizer == 'adam':
-            s_optimizer = tf.keras.optimizers.Adam(learning_rate=rate)
-        elif args.optimizer == 'rmsprop':
-            s_optimizer = tf.keras.optimizers.RMSprop(learning_rate=rate, rho=args.decay, momentum=args.momentum)
-        else:
-            raise ValueError("Optimizer type not recognized")
-        self.model.compile(optimizer=s_optimizer, loss=tf2_loss)
+        if train:
+            # define the training parameters and prepare for training
+            # training params
+            self.grad_clip = args.grad_clip
+            size = args.nbatches * args.batch_size
+            rate = tf.keras.optimizers.schedules.ExponentialDecay(args.learning_rate, size, args.lr_decay)
+            if args.optimizer == 'adam':
+                s_optimizer = tf.keras.optimizers.Adam(learning_rate=rate)
+            elif args.optimizer == 'rmsprop':
+                s_optimizer = tf.keras.optimizers.RMSprop(learning_rate=rate, rho=args.decay, momentum=args.momentum)
+            else:
+                raise ValueError("Optimizer type not recognized")
+            self.model.compile(optimizer=s_optimizer, loss=tf2_loss)
 
     def duplicate(self):
         model = Model(Logger(self.logger))
@@ -149,3 +155,6 @@ class Model:
 
     def get(self):
         return self.model
+
+    def get_attention(self) -> GaussianAttention:
+        return self.attention
